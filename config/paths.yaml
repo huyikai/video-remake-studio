@@ -1,0 +1,15 @@
+vrs_runtime_root: ../vrs-runtime
+minmax_h3_root: ../minmaxH3
+h3_skills_root: ../vrs-runtime/MiniMax-H3/skills
+whisper_model_dir: ../vrs-runtime/models/whisper
+ocr_model_dir: ../vrs-runtime/models/ocr
+qwen3_vl_model_dir: ../vrs-runtime/models/qwen3-vl
+qwen3_5_model_dir: ../vrs-runtime/models/qwen3.5-9b
+qwen3_asr_model_dir: ../vrs-runtime/models/qwen3-asr
+qwen3_aligner_model_dir: ../vrs-runtime/models/qwen3-forcedaligner
+emotion2vec_plus_large_dir: ../vrs-runtime/models/emotion2vec-plus-large
+realesrgan_dir: ../vrs-runtime/models/realesrgan
+auto_deploy: false
+comfy_start_cmd: 'powershell -NoProfile -File "../minmaxH3/start.ps1"'
+comfy_restart_cmd: 'powershell -NoProfile -File "../minmaxH3/start.ps1"'
+vl_start_cmd: ""

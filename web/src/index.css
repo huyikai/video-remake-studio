@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Segoe UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --color-ink: #12110f;
+  --color-panel: #1c1a17;
+  --color-line: #2e2a24;
+  --color-muted: #9a9186;
+  --color-text: #ece7df;
+  --color-tungsten: #e8b86d;
+  --color-warn: #e6c15a;
+  --color-bad: #d4654f;
+  --color-ok: #7cb389;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+* {
+  box-sizing: border-box;
+}

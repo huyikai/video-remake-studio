@@ -1,0 +1,69 @@
+[project]
+name = "video-remake-studio"
+version = "0.1.0"
+description = "从热门视频到复刻成品的本机流水线编排器"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+  "f2>=0.0.1.7",
+  "fastapi>=0.115",
+  "httpx>=0.27",
+  "playwright>=1.49",
+  "psutil>=6.0",
+  "pydantic>=2.9",
+  "pyyaml>=6.0",
+  "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+asr = [
+  "librosa>=0.10",
+  "numpy>=1.26",
+  "soundfile>=0.12",
+  "rapidocr-onnxruntime>=1.4",
+  "scenedetect>=0.6.4",
+]
+vl = [
+  "torch>=2.7",
+  "torchvision>=0.22",
+  "transformers>=4.57.0",
+  "accelerate>=1.0",
+  "qwen-vl-utils>=0.0.11",
+  "huggingface-hub>=0.26",
+  "bitsandbytes>=0.50.2",
+  "torchcodec>=0.13",
+]
+sdk = [
+    "cursor-sdk>=1.0.30",
+]
+
+[project.scripts]
+vrs = "vrs.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vrs"]
+
+[tool.uv]
+package = true
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]

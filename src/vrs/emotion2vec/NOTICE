@@ -1,0 +1,8 @@
+Vendored inference modules from FunASR (`funasr/models/emotion2vec/`, MIT)
+and Facebook fairseq / data2vec-style blocks (MIT).
+
+https://github.com/modelscope/FunASR
+https://github.com/ddlBoJack/emotion2vec
+
+This package is used only to load a local emotion2vec+ checkpoint with
+PyTorch. Do not install the FunASR or ModelScope Python packages for SER.

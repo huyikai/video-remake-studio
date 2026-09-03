@@ -1,0 +1,49 @@
+gpu_memory_gb: 16
+fps: 24
+frame_mod: 17
+frame_remainder: 5
+frame_min: 107
+frame_max: 345
+
+# 只锚首帧，往前发展；提示词首行是 <Picture 1> 对齐指令
+i2va_turbo:
+  workflow: video_minimax_h3_i2v_turbo.json
+  draft:
+    megapixels: 0.4
+    steps: 6
+  final:
+    megapixels: 0.9
+    steps: 8
+
+# 不给关键帧，提示词直接从三字段开始
+t2va_turbo:
+  workflow: video_minimax_h3_t2v_turbo.json
+  draft:
+    megapixels: 0.4
+    steps: 6
+  final:
+    megapixels: 0.9
+    steps: 8
+
+ref2va:
+  workflow: video_minimax_h3_r2v.json
+  draft:
+    megapixels: 0.4
+    steps: 20
+    sampler: res_multistep
+    scheduler: simple
+    ref_image_size: match
+  final:
+    megapixels: 0.9
+    steps: 20
+    sampler: res_multistep
+    scheduler: simple
+    ref_image_size: max
+  final_24gb:
+    megapixels: 1.0
+    steps: 20
+    sampler: res_multistep
+    scheduler: simple
+    ref_image_size: max
+
+negative_prompt: ""

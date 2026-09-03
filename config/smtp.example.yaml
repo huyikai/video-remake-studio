@@ -1,0 +1,10 @@
+enabled: false
+host: smtp.example.com
+port: 587
+user: ""
+password: ""
+from_addr: ""
+to:
+  - ""
+security: starttls
+max_attachment_mb: 20

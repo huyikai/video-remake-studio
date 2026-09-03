@@ -1,0 +1,32 @@
+# 复制为 config/local.yaml（已 gitignore），只写本机要覆盖的键。
+# 深层合并进 default / paths / providers。
+
+# paths:
+#   qwen3_asr_model_dir: D:/models/qwen3-asr
+#   qwen3_aligner_model_dir: D:/models/qwen3-forcedaligner
+#   emotion2vec_plus_large_dir: D:/models/emotion2vec-plus-large
+#   ocr_model_dir: D:/models/ocr
+#   qwen3_vl_model_dir: D:/models/qwen3-vl
+#   h3_skills_root: D:/develop/MiniMax-H3/skills
+
+# providers:
+#   vl:
+#     kind: transformers
+#     model: Qwen/Qwen3-VL-8B-Instruct
+#   llm:
+#     kind: transformers
+#     model: Qwen/Qwen3.5-9B
+#
+# VL 默认本进程 Transformers 加载 Qwen3-VL-8B。文本 LLM 是 Qwen3.5-9B。
+# 不要配 Ollama 11434，也不要用 2B。
+
+# 抖音 Cookie：从已登录 Chrome 打开 douyin.com，DevTools → Network
+# 随便点一条请求，复制请求头里的 Cookie 整段（必须是 ASCII）。
+# 也可设环境变量 VRS_DOUYIN_COOKIE。过期后改这里再 vrs resume，不会弹窗。
+# douyin:
+#   cookie: "sessionid=...; sid_guard=..."
+
+# TikTok 仍可能弹出 Chrome。先用远程调试启动再让引擎复用登录态：
+#   chrome.exe --remote-debugging-port=9222
+# browser:
+#   cdp_url: http://127.0.0.1:9222

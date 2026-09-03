@@ -1,0 +1,64 @@
+aspect_ratio: "16:9"
+aspect_confirm: true
+review_mode: pause_draft
+esrgan: false
+vl_mode: both
+vl_order: video_then_frames
+vl_frame_unit: shot
+vl_chat_timeout: 300
+vl_quant: auto
+vl_video_num_frames: 8
+vl_image_max_edge: 640
+vl_frame_batch: 3
+vl_max_new_tokens: 900
+vl_video_max_tokens: 1200
+vl_frames_max_tokens: 500
+vl_beats_max_tokens: 1800
+vl_repetition_penalty: 1.1
+vl_no_repeat_ngram: 24
+beat_window: 3.0
+beat_hop: 2.5
+beat_step: 0.25
+beat_cells: 12
+beat_cell_h: 360
+beat_scene: 0.25
+llm_quant: auto
+llm_max_new_tokens: 2048
+llm_enable_thinking: false
+max_seconds_per_chunk: 30
+ocr_fps: 2.0
+asr_engine: qwen3
+asr_model: Qwen/Qwen3-ASR-1.7B-hf
+asr_aligner: Qwen/Qwen3-ForcedAligner-0.6B-hf
+asr_language: zh
+asr_device: auto
+asr_max_new_tokens: 1536
+ser_model: emotion2vec/emotion2vec_plus_large
+scene_threshold: 27.0
+hang_timeout_sec: 180
+generate_clip_timeout_sec: 1800
+oom_fallback: none
+clip_restart_max: 3
+job_restart_max: 10
+ass_burn: true
+ass_default_region: bottom
+bind_host: "127.0.0.1"
+bind_port: 8787
+ytdlp:
+  max_height: 1080
+  merge_output_format: mp4
+  format: "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]"
+  cookies_file: ""
+  cookies_from_browser: ""
+douyin:
+  cookie: ""
+  comment_fetch: 100
+  comment_keep: 30
+  timeout: 10
+  max_retries: 5
+browser:
+  cdp_url: "http://127.0.0.1:9222"
+  channel: chrome
+  # 通用站点无头；TikTok 会强制弹出 Chrome 过 WAF。抖音走 f2，不弹浏览器。
+  headless: true
+  timeout_ms: 60000
