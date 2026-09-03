@@ -10,12 +10,14 @@ dist/
 
 config/local.yaml
 config/smtp.local.yaml
+data/runtime.yaml
 
 logs/
 
 data/jobs/*
 !data/jobs/.gitkeep
 
+node_modules/
 web/node_modules/
 web/dist/
 

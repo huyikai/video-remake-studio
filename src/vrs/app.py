@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from vrs.envcheck import collect_env
+from vrs.mock import ensure_seed, reset as reset_mock, create_mock_job
 from vrs.h3grid import GENERATE_PATHS
 from vrs.jobops import (
     JobOpsError,
@@ -82,6 +83,9 @@ class ScriptSave(BaseModel):
 
 
 class SettingsPatch(BaseModel):
+    mode: Literal["mock", "real"] | None = None
+    mock_speed: Literal["0.25x", "1x", "4x"] | None = None
+    mock_faults: dict[str, Any] | None = None
     comfy_base_url: str | None = None
     gpu_memory_gb: float | None = None
     hang_timeout_sec: int | None = None
@@ -126,6 +130,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def _settings() -> Settings:
         return app.state.settings
 
+    ensure_seed(settings)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -155,10 +161,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def api_settings() -> dict:
         return settings_public(_settings())
 
+    @app.post("/api/mock/reset")
+    def api_mock_reset() -> dict[str, Any]:
+        if _settings().mode() != "mock":
+            raise HTTPException(400, "只有 MOCK 模式可以重置演示数据")
+        return {"ok": True, "removed": reset_mock(_settings())}
+
     @app.patch("/api/settings")
     def api_patch_settings(body: SettingsPatch) -> dict:
         try:
-            return patch_settings(_settings(), body.model_dump(exclude_none=True))
+            payload = body.model_dump(exclude_none=True)
+            if payload.get("mode") == "real" and _settings().mode() != "real":
+                payload["mode"] = "real"
+            return patch_settings(_settings(), payload)
         except JobOpsError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -231,18 +246,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.generate_path not in GENERATE_PATHS:
             raise HTTPException(400, "未知生成路线")
         try:
-            job = create_and_download(
-                _settings(),
-                url=body.url,
-                file_path=body.file_path,
-                review_mode=body.review_mode,
-                generate_path=body.generate_path,
-                smtp=body.smtp,
-                vl_mode=body.vl_mode,
-                aspect_ratio=body.aspect_ratio,
-                aspect_confirmed=body.aspect_confirmed,
-                background=True,
-            )
+            if _settings().mode() == "mock":
+                job = create_mock_job(
+                    _settings(),
+                    kind="url" if body.url else "file",
+                    url=body.url,
+                    original_path=body.file_path,
+                    review_mode=body.review_mode,
+                    generate_path=body.generate_path,
+                    smtp=body.smtp,
+                    vl_mode=body.vl_mode,
+                    aspect_ratio=body.aspect_ratio,
+                    aspect_confirmed=body.aspect_confirmed,
+                )
+            else:
+                job = create_and_download(
+                    _settings(),
+                    url=body.url,
+                    file_path=body.file_path,
+                    review_mode=body.review_mode,
+                    generate_path=body.generate_path,
+                    smtp=body.smtp,
+                    vl_mode=body.vl_mode,
+                    aspect_ratio=body.aspect_ratio,
+                    aspect_confirmed=body.aspect_confirmed,
+                    background=True,
+                )
         except IngestGateError as exc:
             raise HTTPException(400, str(exc)) from exc
         except BusyError as exc:
@@ -255,7 +284,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             get_job(_settings(), job_id)
             if occupied_job_id(_settings()):
                 raise BusyError(f"已有任务在跑：{occupied_job_id(_settings())}")
-            spawn_resume(_settings(), job_id)
+            if _settings().mode() == "mock":
+                from vrs.mock import resume
+
+                resume(_settings(), job_id)
+            else:
+                spawn_resume(_settings(), job_id)
             _, job = get_job(_settings(), job_id)
             return job
         except FileNotFoundError:
@@ -275,9 +309,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             def fn() -> None:
                 rerun_drafts(_settings(), job_id, ids or None)
 
-            from vrs.worker import spawn
+            if _settings().mode() == "mock":
+                from vrs.mock import draft
 
-            spawn(_settings(), job_id, fn)
+                draft(_settings(), job_id, ids or None)
+            else:
+                from vrs.worker import spawn
+
+                spawn(_settings(), job_id, fn)
             _, job = get_job(_settings(), job_id)
             return job
         except FileNotFoundError:
@@ -295,9 +334,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             def fn() -> None:
                 run_finals(_settings(), job_id)
 
-            from vrs.worker import spawn
+            if _settings().mode() == "mock":
+                from vrs.mock import final
 
-            spawn(_settings(), job_id, fn)
+                final(_settings(), job_id)
+            else:
+                from vrs.worker import spawn
+
+                spawn(_settings(), job_id, fn)
             _, job = get_job(_settings(), job_id)
             return job
         except FileNotFoundError:

@@ -90,6 +90,22 @@ def collect_metrics(
 ) -> dict[str, Any]:
     gpu = _nvidia_smi()
     mem = psutil.virtual_memory()
+    if settings.mode() == "mock":
+        return {
+            "mode": "mock",
+            "gpu": None,
+            "ram": {"used_bytes": int(mem.used), "total_bytes": int(mem.total)},
+            "h3": {
+                "workflow_file": "mock://minimax-h3",
+                "label": "Mock H3 执行器",
+                "quality": "mock",
+                "prompt_id": "mock-runner",
+                "queue_length": 0,
+                "foreign": False,
+                "comfy_reachable": True,
+            },
+            "alerts": {"vram_hot": False, "temp_hot": False},
+        }
     comfy_url = str(settings.providers.get("comfy", {}).get("base_url", "http://127.0.0.1:8188"))
     queue = _comfy_queue(comfy_url)
     ours = our_prompt_ids or set()

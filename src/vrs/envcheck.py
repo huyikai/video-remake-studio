@@ -69,7 +69,33 @@ def _item(id_: str, ok: bool, detail: str, *, layer: str, needed: bool) -> dict[
     }
 
 
+def _mock_env(settings: Settings, stage: str) -> dict[str, Any]:
+    stage = stage if stage in STAGE_NEEDS else "idle"
+    current_need = "无（空闲）" if stage == "idle" else "、".join(STAGE_NEEDS[stage]) or "无"
+    install = [
+        _item("mock_fixture", True, "内置示例视频已就绪", layer="install", needed=True),
+        _item("jobs_writable", True, str(jobs_dir(settings)), layer="install", needed=True),
+        _item("ffmpeg", True, "Mock 可使用内置预生成产物", layer="install", needed=False),
+        _item("models", True, "Mock 不加载真实模型", layer="install", needed=False),
+    ]
+    live = [
+        _item("mock_runner", True, "模拟任务执行器运行中", layer="live", needed=True),
+        _item("comfy", True, "Mock ComfyUI 适配器", layer="live", needed=False),
+        _item("vl", True, "mock:qwen3-vl", layer="live", needed=False),
+        _item("llm", True, "mock:llm", layer="live", needed=False),
+    ]
+    return {
+        "stage": stage,
+        "summary": f"MOCK 模式：当前需要 {current_need}",
+        "install": install,
+        "live": live,
+        "gate_new_job": {"ok": True, "reasons": []},
+    }
+
+
 def collect_env(settings: Settings, *, stage: str = "idle") -> dict[str, Any]:
+    if settings.mode() == "mock":
+        return _mock_env(settings, stage)
     stage = stage if stage in STAGE_NEEDS else "idle"
     needed = set(STAGE_NEEDS[stage])
     install: list[dict[str, Any]] = []

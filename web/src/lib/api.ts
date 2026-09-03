@@ -8,6 +8,7 @@ export type EnvItem = {
 };
 
 export type EnvPayload = {
+  mode?: "mock" | "real";
   stage: string;
   summary: string;
   install: EnvItem[];
@@ -39,6 +40,7 @@ export type MetricsPayload = {
 
 export type JobSummary = {
   id: string;
+  mode?: "mock" | "real";
   state: string;
   stage: string;
   note?: string | null;
@@ -73,7 +75,12 @@ async function parse(res: Response) {
 export const api = {
   env: (stage = "idle") => fetch(`/api/env?stage=${encodeURIComponent(stage)}`).then(parse) as Promise<EnvPayload>,
   metrics: () => fetch("/api/env/metrics").then(parse) as Promise<MetricsPayload>,
-  settings: () => fetch("/api/settings").then(parse),
+  settings: () => fetch("/api/settings").then(parse) as Promise<{
+    mode: "mock" | "real";
+    mock_speed: "0.25x" | "1x" | "4x";
+    mock_faults: Record<string, unknown>;
+    [key: string]: unknown;
+  }>,
   patchSettings: (body: Record<string, unknown>) =>
     fetch("/api/settings", {
       method: "PATCH",
@@ -112,6 +119,7 @@ export const api = {
   finals: (id: string) => fetch(`/api/jobs/${id}/final`, { method: "POST" }).then(parse),
   cancel: (id: string) => fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then(parse),
   remove: (id: string) => fetch(`/api/jobs/${id}`, { method: "DELETE" }).then(parse),
+  resetMock: () => fetch("/api/mock/reset", { method: "POST" }).then(parse),
   aspect: (id: string, follow_source: boolean) =>
     fetch(`/api/jobs/${id}/aspect`, {
       method: "POST",

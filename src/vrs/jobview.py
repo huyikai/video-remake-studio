@@ -153,6 +153,7 @@ def summarize_job(job: dict[str, Any]) -> dict[str, Any]:
     done = sum(1 for rec in stages.values() if isinstance(rec, dict) and rec.get("status") in {"done", "skipped"})
     return {
         "id": job.get("id"),
+        "mode": (job.get("options") or {}).get("mode") or "real",
         "state": job.get("state"),
         "stage": job.get("stage"),
         "note": job.get("note"),
@@ -250,6 +251,8 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
         source_aspect = aspect_label(int(probe["width"]), int(probe["height"]))
     return {
         **job,
+        "mode": (job.get("options") or {}).get("mode") or "real",
+        "model_trace": [] if compact else list(job.get("model_trace") or []),
         "elapsed_sec": elapsed_seconds(job),
         "generate_path": path,
         "clips": rows,

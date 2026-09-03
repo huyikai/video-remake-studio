@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+import os
 import yaml
 
 
@@ -71,11 +72,20 @@ class Settings:
             }
             if rest:
                 self.default = deep_merge(self.default, rest)
+        self._apply_runtime_env()
         self._apply_smtp_env()
         self._apply_douyin_env()
 
+    def _apply_runtime_env(self) -> None:
+        runtime_path = self.root / "data" / "runtime.yaml"
+        runtime = load_yaml(runtime_path)
+        mode = os.environ.get("VRS_MODE") or runtime.get("mode") or self.default.get("mode") or "mock"
+        self.default["mode"] = str(mode).lower() if str(mode).lower() in {"mock", "real"} else "mock"
+        speed = runtime.get("mock_speed") or self.default.get("mock_speed") or "1x"
+        self.default["mock_speed"] = str(speed) if str(speed) in {"0.25x", "1x", "4x"} else "1x"
+        self.default["mock_faults"] = runtime.get("mock_faults") or self.default.get("mock_faults") or {}
+
     def _apply_smtp_env(self) -> None:
-        import os
 
         mapping = {
             "VRS_SMTP_HOST": "host",
@@ -119,6 +129,12 @@ class Settings:
 
     def bind_port(self) -> int:
         return int(self.default.get("bind_port", 8787))
+
+    def mode(self) -> str:
+        return str(self.default.get("mode") or "mock").lower()
+
+    def mock_speed(self) -> str:
+        return str(self.default.get("mock_speed") or "1x")
 
     def reload(self) -> None:
         self.__init__(self.root)

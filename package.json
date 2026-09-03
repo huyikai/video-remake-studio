@@ -1,0 +1,13 @@
+{
+  "name": "video-remake-studio",
+  "private": true,
+  "scripts": {
+    "dev:mock": "concurrently -k -n api,web -c yellow,cyan \"uv run --no-sync vrs serve --host 127.0.0.1 --port 8787\" \"pnpm --dir web dev --host 0.0.0.0 --port 5174\"",
+    "dev:web": "pnpm --dir web dev --host 0.0.0.0 --port 5174",
+    "build:web": "pnpm --dir web build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "packageManager": "pnpm@10.34.4"
+}

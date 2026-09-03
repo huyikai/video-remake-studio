@@ -8,19 +8,20 @@ import { useUi } from "./ui";
 function Shell() {
   const { setOpen } = useUi();
   return (
-    <div className="flex h-full flex-col bg-ink text-text">
-      <header className="flex items-center justify-between border-b border-line px-5 py-2">
-        <NavLink to="/" className="font-semibold tracking-wide text-tungsten">
-          Video Remake Studio
+    <div className="flex h-full flex-col bg-bg text-text">
+      <header className="flex min-h-16 items-center justify-between border-b border-line bg-surface/80 px-5 backdrop-blur">
+        <NavLink to="/" className="flex items-center gap-3 font-semibold tracking-wide">
+          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-tungsten text-ink">V</span>
+          <span>Video Remake Studio</span>
         </NavLink>
-        <nav className="flex gap-5 text-sm text-muted">
-          <NavLink to="/" className={({ isActive }) => (isActive ? "text-text" : "hover:text-text")}>
-            任务
+        <nav className="flex items-center gap-1 text-sm text-muted">
+          <NavLink to="/" className={({ isActive }) => `rounded px-3 py-2 ${isActive ? "bg-panel text-text" : "hover:bg-panel hover:text-text"}`}>
+            任务队列
           </NavLink>
-          <button type="button" className="hover:text-text" onClick={() => setOpen("new")}>
-            新建
+          <button type="button" className="rounded px-3 py-2 hover:bg-panel hover:text-text" onClick={() => setOpen("new")}>
+            新建任务
           </button>
-          <button type="button" className="hover:text-text" onClick={() => setOpen("settings")}>
+          <button type="button" className="rounded px-3 py-2 hover:bg-panel hover:text-text" onClick={() => setOpen("settings")}>
             设置
           </button>
         </nav>

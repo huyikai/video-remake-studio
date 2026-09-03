@@ -213,6 +213,9 @@ def settings_public(settings: Settings) -> dict[str, Any]:
     comfy = settings.providers.get("comfy") or {}
     vl = settings.providers.get("vl") or {}
     return {
+        "mode": settings.mode(),
+        "mock_speed": settings.mock_speed(),
+        "mock_faults": settings.default.get("mock_faults") or {},
         "bind_host": settings.bind_host(),
         "bind_port": settings.bind_port(),
         "comfy_base_url": str(comfy.get("base_url") or "http://127.0.0.1:8188"),
@@ -243,6 +246,14 @@ def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
         raise JobOpsError("密码类字段不能从页面提交")
     path = settings.root / "config" / "local.yaml"
     current = load_yaml(path) if path.is_file() else {}
+    runtime_path = settings.root / "data" / "runtime.yaml"
+    runtime = load_yaml(runtime_path) if runtime_path.is_file() else {}
+    if "mode" in body and body["mode"] is not None:
+        runtime["mode"] = str(body["mode"]).lower()
+    if "mock_speed" in body and body["mock_speed"] is not None:
+        runtime["mock_speed"] = str(body["mock_speed"])
+    if "mock_faults" in body and body["mock_faults"] is not None:
+        runtime["mock_faults"] = body["mock_faults"]
     mapping_default: dict[str, type] = {
         "hang_timeout_sec": int,
         "generate_clip_timeout_sec": int,
@@ -258,6 +269,10 @@ def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     for key, caster in mapping_default.items():
         if key in body and body[key] is not None:
             current[key] = caster(body[key])
+    if "mode" in body and str(body["mode"]).lower() not in {"mock", "real"}:
+        raise JobOpsError("运行模式只能是 mock 或 real")
+    if "mock_speed" in body and str(body["mock_speed"]) not in {"0.25x", "1x", "4x"}:
+        raise JobOpsError("Mock 速度只能是 0.25x、1x 或 4x")
     if body.get("comfy_base_url"):
         providers = dict(current.get("providers") or {})
         comfy = dict(providers.get("comfy") or {})
@@ -284,5 +299,11 @@ def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
         yaml.safe_dump(current, allow_unicode=True, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
     )
+    if runtime:
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_path.write_text(
+            yaml.safe_dump(runtime, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
     settings.reload()
     return settings_public(settings)

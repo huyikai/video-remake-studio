@@ -2,15 +2,45 @@
 
 @theme {
   --font-sans: "Segoe UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
-  --color-ink: #12110f;
-  --color-panel: #1c1a17;
-  --color-line: #2e2a24;
-  --color-muted: #9a9186;
-  --color-text: #ece7df;
-  --color-tungsten: #e8b86d;
-  --color-warn: #e6c15a;
-  --color-bad: #d4654f;
-  --color-ok: #7cb389;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-panel: var(--panel);
+  --color-line: var(--line);
+  --color-muted: var(--muted);
+  --color-text: var(--text);
+  --color-tungsten: var(--accent);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-ok: var(--ok);
+}
+
+:root {
+  color-scheme: light;
+  --bg: oklch(0.975 0.006 250);
+  --surface: oklch(0.995 0.004 250);
+  --panel: oklch(0.955 0.007 250);
+  --line: oklch(0.22 0.014 255 / 14%);
+  --muted: oklch(0.44 0.02 250);
+  --text: oklch(0.22 0.014 255);
+  --accent: oklch(0.78 0.12 75);
+  --warn: oklch(0.58 0.12 75);
+  --bad: oklch(0.55 0.16 25);
+  --ok: oklch(0.48 0.1 145);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: oklch(0.17 0.012 255);
+  --surface: oklch(0.205 0.012 255);
+  --panel: oklch(0.185 0.012 255);
+  --line: oklch(0.82 0.02 250 / 15%);
+  --muted: oklch(0.71 0.018 250);
+  --text: oklch(0.94 0.01 250);
+  --accent: oklch(0.78 0.09 75);
+  --warn: oklch(0.78 0.1 75);
+  --bad: oklch(0.68 0.14 25);
+  --ok: oklch(0.7 0.1 145);
 }
 
 html,
@@ -21,11 +51,44 @@ body,
 
 body {
   margin: 0;
-  background: var(--color-ink);
-  color: var(--color-text);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-sans);
+  background-image: radial-gradient(60rem 28rem at 100% -10%, color-mix(in oklch, var(--accent) 8%, transparent), transparent 62%);
 }
 
 * {
   box-sizing: border-box;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, opacity 160ms ease, transform 160ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.99);
+}
+
+::selection {
+  background: color-mix(in oklch, var(--accent) 30%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: oklch(0.17 0.012 255);
+    --surface: oklch(0.205 0.012 255);
+    --panel: oklch(0.185 0.012 255);
+    --line: oklch(0.82 0.02 250 / 15%);
+    --muted: oklch(0.71 0.018 250);
+    --text: oklch(0.94 0.01 250);
+    --accent: oklch(0.78 0.09 75);
+    --warn: oklch(0.78 0.1 75);
+    --bad: oklch(0.68 0.14 25);
+    --ok: oklch(0.7 0.1 145);
+  }
 }

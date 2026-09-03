@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,9 @@ def create_job(
             "vl_mode": vl_mode or settings.default.get("vl_mode", "both"),
             "aspect_ratio": aspect_ratio or settings.default.get("aspect_ratio", "16:9"),
             "aspect_confirmed": bool(aspect_confirmed),
+            "mode": settings.mode(),
+            "mock_speed": settings.mock_speed(),
+            "mock_faults": deepcopy(settings.default.get("mock_faults") or {}),
         },
     }
     save_status(job, directory)

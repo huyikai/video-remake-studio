@@ -3,6 +3,9 @@ import Dialog from "../components/Dialog";
 import { api } from "../lib/api";
 
 type SettingsView = {
+  mode: "mock" | "real";
+  mock_speed: "0.25x" | "1x" | "4x";
+  mock_faults: Record<string, unknown>;
   comfy_base_url: string;
   gpu_memory_gb: number;
   hang_timeout_sec: number;
@@ -29,9 +32,14 @@ export default function SettingsPage({ onClose }: Props) {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const [faultText, setFaultText] = useState("{}");
 
   useEffect(() => {
-    api.settings().then((d) => setForm(d as SettingsView)).catch((e: Error) => setErr(e.message));
+    api.settings().then((d) => {
+      const next = d as SettingsView;
+      setForm(next);
+      setFaultText(JSON.stringify(next.mock_faults || {}, null, 2));
+    }).catch((e: Error) => setErr(e.message));
   }, []);
 
   function set<K extends keyof SettingsView>(key: K, value: SettingsView[K]) {
@@ -42,9 +50,19 @@ export default function SettingsPage({ onClose }: Props) {
   async function save() {
     if (!form) return;
     setErr("");
+    if (form.mode === "real" && !window.confirm("REAL 模式会调用真实模型与 GPU，确定切换吗？")) return;
     setSaving(true);
     try {
+      let mockFaults: Record<string, unknown> = {};
+      try {
+        mockFaults = JSON.parse(faultText) as Record<string, unknown>;
+      } catch {
+        throw new Error("故障场景必须是有效 JSON");
+      }
       const next = await api.patchSettings({
+        mode: form.mode,
+        mock_speed: form.mock_speed,
+        mock_faults: mockFaults,
         comfy_base_url: form.comfy_base_url,
         gpu_memory_gb: form.gpu_memory_gb,
         hang_timeout_sec: form.hang_timeout_sec,
@@ -61,7 +79,8 @@ export default function SettingsPage({ onClose }: Props) {
         ass_burn: form.ass_burn,
       });
       setForm(next as SettingsView);
-      setMsg("已写入 config/local.yaml");
+      setFaultText(JSON.stringify((next as SettingsView).mock_faults || {}, null, 2));
+      setMsg("已写入本机运行时配置");
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -75,6 +94,13 @@ export default function SettingsPage({ onClose }: Props) {
         <p className="text-muted">{err || "加载设置…"}</p>
       ) : (
         <div className="space-y-3 text-sm">
+          <section className="rounded-lg border border-tungsten/40 bg-tungsten/10 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div><p className="text-xs uppercase tracking-[0.16em] text-muted">运行环境</p><h3 className="mt-1 font-semibold">执行模式</h3><p className="mt-1 text-xs text-muted">Mock 不调用真实模型，Real 会检查本机推理环境。</p></div>
+              <select className="rounded border border-line bg-surface p-2 font-mono text-sm text-text" value={form.mode} onChange={(e) => set("mode", e.target.value as SettingsView["mode"])}><option value="mock">MOCK</option><option value="real">REAL</option></select>
+            </div>
+            {form.mode === "mock" ? <div className="mt-4 space-y-3 border-t border-line/60 pt-4"><label className="block text-muted">模拟速度<select className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.mock_speed} onChange={(e) => set("mock_speed", e.target.value as SettingsView["mock_speed"])}><option value="0.25x">0.25x</option><option value="1x">1x</option><option value="4x">4x</option></select></label><label className="block text-muted">故障场景 JSON<textarea className="mt-1 h-20 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text" value={faultText} onChange={(e) => setFaultText(e.target.value)} /></label><p className="text-xs text-muted">示例：{"{\"generate\":{\"clip_id\":\"h3_01\",\"count\":1,\"type\":\"timeout\"}}"}</p></div> : null}
+          </section>
           <label className="block text-muted">
             Comfy base_url
             <input className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.comfy_base_url} onChange={(e) => set("comfy_base_url", e.target.value)} />
@@ -114,7 +140,7 @@ export default function SettingsPage({ onClose }: Props) {
             />
           </label>
           <p className="text-xs text-muted">
-            主机 {form.smtp_host || "—"} · {form.smtp_has_password ? "已配置密码" : "未配置密码"}
+            主机 {form.smtp_host || "未配置"} · {form.smtp_has_password ? "已配置密码" : "未配置密码"}
             <br />
             {form.smtp_hint}
           </p>
@@ -133,7 +159,7 @@ export default function SettingsPage({ onClose }: Props) {
               取消
             </button>
             <button type="button" className="rounded bg-tungsten px-4 py-2 text-ink disabled:opacity-40" disabled={saving} onClick={() => void save()}>
-              {saving ? "保存中…" : "保存到本机配置"}
+              {saving ? "保存中..." : "保存到本机配置"}
             </button>
           </div>
         </div>

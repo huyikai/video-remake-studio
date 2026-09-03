@@ -55,6 +55,7 @@ export default function StatusBar() {
   const gpu = metrics?.gpu;
   const ram = metrics?.ram;
   const h3 = metrics?.h3;
+  const mode = env?.mode || (metrics as (MetricsPayload & { mode?: string }) | null)?.mode || "mock";
   const vramHot = Boolean(metrics?.alerts.vram_hot);
   const tempHot = Boolean(metrics?.alerts.temp_hot);
 
@@ -66,7 +67,8 @@ export default function StatusBar() {
         className="w-full border-b border-line bg-panel px-5 py-2 text-left text-xs"
       >
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted">
-          <span className="text-text">就绪</span>
+          <span className="rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 font-mono text-tungsten">{mode.toUpperCase()}</span>
+          <span className="text-text">运行状态</span>
           <span className="inline-flex items-center gap-1">
             <Dot item={byId.get("ffmpeg")} /> ffmpeg
           </span>

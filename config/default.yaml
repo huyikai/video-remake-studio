@@ -1,3 +1,6 @@
+mode: mock
+mock_speed: 1x
+mock_faults: {}
 aspect_ratio: "16:9"
 aspect_confirm: true
 review_mode: pause_draft

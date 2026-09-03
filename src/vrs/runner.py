@@ -214,10 +214,11 @@ def create_and_download(
         path = Path(original)
         if not path.is_absolute():
             raise IngestGateError("本地进料必须是绝对路径")
-        if not path.is_file():
+        if settings.mode() != "mock" and not path.is_file():
             raise IngestGateError(f"找不到文件：{path}")
     want_smtp = settings.smtp.get("enabled") if smtp is None else smtp
-    _gate(settings, kind=kind, want_smtp=bool(want_smtp), url=url)
+    if settings.mode() != "mock":
+        _gate(settings, kind=kind, want_smtp=bool(want_smtp), url=url)
     if background and JobLock(settings).occupied():
         raise BusyError("已有任务在跑，等它结束或先放弃")
     job = create_job(
@@ -232,6 +233,11 @@ def create_and_download(
         aspect_ratio=aspect_ratio,
         aspect_confirmed=aspect_confirmed,
     )
+    if settings.mode() == "mock":
+        from vrs.mock import start_created
+
+        start_created(settings, job["id"])
+        return job
     if background:
         from vrs.worker import spawn
 
@@ -255,6 +261,10 @@ def resume_download(
     if job.get("need_aspect_confirm") and not (job.get("options") or {}).get("aspect_confirmed"):
         return job
     kind = job["source"]["kind"]
+    if settings.mode() == "mock":
+        from vrs.mock import resume_now as mock_resume
+
+        return mock_resume(settings, job_id)
     _gate(
         settings,
         kind=kind,
@@ -303,6 +313,10 @@ def resume_download(
 
 
 def rerun_drafts(settings: Settings, job_id: str, clip_ids: list[str] | None = None) -> dict:
+    if settings.mode() == "mock":
+        from vrs.mock import draft_now as mock_draft
+
+        return mock_draft(settings, job_id, clip_ids)
     directory, job = get_job(settings, job_id)
     if job.get("stages", {}).get("precheck", {}).get("status") != "done":
         raise IngestGateError("预检还没过，不能出草稿")
@@ -325,6 +339,10 @@ def rerun_drafts(settings: Settings, job_id: str, clip_ids: list[str] | None = N
 
 
 def run_finals(settings: Settings, job_id: str) -> dict:
+    if settings.mode() == "mock":
+        from vrs.mock import final_now as mock_final
+
+        return mock_final(settings, job_id)
     directory, job = get_job(settings, job_id)
     clips = _clips(directory)
     if not clips or not quality_complete(directory, clips, "draft"):
