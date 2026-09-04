@@ -139,7 +139,7 @@ export default function NewJob({ onClose }: Props) {
           <label className="block text-sm text-muted">
             审片
             <select className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={review} onChange={(e) => setReview(e.target.value)}>
-              <option value="pause_draft">审片（停在草稿）</option>
+              <option value="pause_draft">审片（停在试片）</option>
               <option value="full_auto">一条龙出成片</option>
             </select>
           </label>

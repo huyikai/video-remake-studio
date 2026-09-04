@@ -52,6 +52,7 @@ export type JobSummary = {
   stages_done?: number;
   stages_total?: number;
   need_aspect_confirm?: boolean;
+  next_action?: string;
 };
 
 async function parse(res: Response) {

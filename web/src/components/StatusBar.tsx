@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type EnvItem, type EnvPayload, type MetricsPayload } from "../lib/api";
-import { cn } from "../lib/utils";
+import { cn, modeLabel } from "../lib/utils";
 
 const DOT = {
   ok: "bg-ok",
@@ -10,11 +10,20 @@ const DOT = {
 
 function Dot({ item }: { item?: EnvItem }) {
   const cls = item ? DOT[item.status as keyof typeof DOT] || "bg-muted" : "bg-muted";
-  return <span className={cn("inline-block h-2 w-2 rounded-full", cls)} title={item?.detail} />;
+  return <span className={cn("inline-block size-2 shrink-0 rounded-full", cls)} title={item?.detail} />;
 }
 
 function fmtGb(n: number) {
   return (n / 1024 ** 3).toFixed(1);
+}
+
+function StatusDot({ item, label }: { item?: EnvItem; label: string }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1" title={item?.detail || label}>
+      <Dot item={item} />
+      {label}
+    </span>
+  );
 }
 
 export default function StatusBar() {
@@ -58,62 +67,34 @@ export default function StatusBar() {
   const mode = env?.mode || (metrics as (MetricsPayload & { mode?: string }) | null)?.mode || "mock";
   const vramHot = Boolean(metrics?.alerts.vram_hot);
   const tempHot = Boolean(metrics?.alerts.temp_hot);
+  const summary = busy ? h3?.label || "任务运行中" : env?.summary || "读取环境…";
 
   return (
-    <>
+    <div className="flex max-w-full justify-center">
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="w-full border-b border-line bg-panel px-5 py-2 text-left text-xs"
+        className="flex max-w-full items-center justify-center gap-3 overflow-hidden rounded-md px-2 py-1.5 text-xs text-muted hover:bg-panel"
+        title="查看环境与设备"
       >
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted">
-          <span className="rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 font-mono text-tungsten">{mode.toUpperCase()}</span>
-          <span className="text-text">运行状态</span>
-          <span className="inline-flex items-center gap-1">
-            <Dot item={byId.get("ffmpeg")} /> ffmpeg
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Dot item={byId.get("qwen3_asr_model_dir") || byId.get("asr")} /> Whisper/ASR
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Dot item={byId.get("vl")} /> VL
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Dot item={byId.get("comfy")} /> Comfy
-          </span>
-          <span className="text-text/80">{env?.summary || "读取环境…"}</span>
-        </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-muted">
-          {gpu ? (
-            <>
-              <span>{gpu.name.replace("NVIDIA GeForce ", "")}</span>
-              <span className={vramHot ? "text-warn" : ""}>
-                显存 {Math.round(gpu.memory_used_mb)}/{Math.round(gpu.memory_total_mb)} MB
-              </span>
-              <span>GPU {Math.round(gpu.utilization_pct)}%</span>
-              <span className={tempHot ? "text-warn" : ""}>温度 {Math.round(gpu.temperature_c)}°C</span>
-            </>
-          ) : (
-            <span>GPU —</span>
-          )}
-          {ram ? (
-            <span>
-              内存 {fmtGb(ram.used_bytes)}/{fmtGb(ram.total_bytes)} GB
-            </span>
-          ) : null}
-          <span className="text-tungsten">{h3?.label || "未在生成"}</span>
-          {h3?.quality ? <span>{h3.quality}</span> : null}
-        </div>
+        <span className="shrink-0 rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 text-tungsten">{modeLabel(mode)}</span>
+        <span className="hidden min-w-0 items-center gap-3 sm:inline-flex">
+          <StatusDot item={byId.get("ffmpeg")} label="ffmpeg" />
+          <StatusDot item={byId.get("qwen3_asr_model_dir") || byId.get("asr")} label="ASR" />
+          <StatusDot item={byId.get("vl")} label="VL" />
+          <StatusDot item={byId.get("comfy")} label="Comfy" />
+        </span>
+        <span className="min-w-0 truncate text-text/80">{summary}</span>
       </button>
       {open ? (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 z-50 flex justify-end bg-bg" onClick={() => setOpen(false)}>
           <aside
-            className="h-full w-full max-w-3xl overflow-y-auto border-l border-line bg-ink p-5 text-sm"
+            className="h-full w-full max-w-3xl overflow-y-auto border-l border-line bg-surface p-5 text-sm"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-base font-semibold">环境与设备</h2>
-              <button className="text-muted hover:text-text" onClick={() => setOpen(false)}>
+              <button type="button" className="text-muted hover:text-text" onClick={() => setOpen(false)}>
                 关闭
               </button>
             </div>
@@ -139,6 +120,9 @@ export default function StatusBar() {
                   prompt_id {h3?.prompt_id || "—"}
                   <br />
                   队列 {h3?.queue_length ?? "—"}
+                  <br />
+                  {h3?.label || "未在生成"}
+                  {h3?.quality ? ` · ${h3.quality}` : ""}
                 </p>
               </section>
               <section>
@@ -146,15 +130,20 @@ export default function StatusBar() {
                 <p>{env?.summary}</p>
                 <p className="mt-3 text-muted">
                   {gpu
-                    ? `功耗 ${gpu.power_w ?? "—"} W · 占用 ${gpu.utilization_pct}% · 温度 ${gpu.temperature_c}°C`
+                    ? `${gpu.name.replace("NVIDIA GeForce ", "")} · 显存 ${Math.round(gpu.memory_used_mb)}/${Math.round(gpu.memory_total_mb)} MB · 占用 ${gpu.utilization_pct}% · 温度 ${gpu.temperature_c}°C${tempHot || vramHot ? " · 偏高" : ""}`
                     : "读不到 nvidia-smi"}
                 </p>
+                {ram ? (
+                  <p className="mt-2 text-muted">
+                    内存 {fmtGb(ram.used_bytes)}/{fmtGb(ram.total_bytes)} GB
+                  </p>
+                ) : null}
                 {vramHot ? <p className="mt-2 text-warn">显存 ≥90%（生成时发黄是预期）</p> : null}
               </section>
             </div>
           </aside>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

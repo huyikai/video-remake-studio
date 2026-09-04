@@ -388,13 +388,13 @@ def run_generate(
             job["state"] = "paused"
             job["stage"] = "finish"
             job["note"] = (
-                f"草稿 {len(clips)} 段已齐{subset_note}{concat_note}。"
-                f"看 generate/{path}/draft/ 或 output/{path}/draft.mp4，resume 按同一脚本出成片并拼接"
+                f"试片 {len(clips)} 段已齐{subset_note}{concat_note}。"
+                f"看 generate/{path}/draft/ 或 output/{path}/draft.mp4，出成片按同一脚本生成并交付"
             )
             if concat_rel:
                 send_mail(
                     settings.smtp,
-                    subject=f"VRS 草稿待审 {job['id']}",
+                    subject=f"VRS 试片待审 {job['id']}",
                     body=f"job {job['id']}\n{job['note']}\n本机 {(directory / concat_rel).resolve()}",
                     attachments=[directory / concat_rel],
                     log=lambda text: _log(directory, text),

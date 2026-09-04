@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     cancel_p = sub.add_parser("cancel", help="放弃正在跑的任务（打断 Comfy，保留产物）")
     cancel_p.add_argument("job_id")
 
-    approve_p = sub.add_parser("approve-script", help="预检通过后出草稿（与 resume 相同）")
+    approve_p = sub.add_parser("approve-script", help="预检通过后出试片（与 resume 相同）")
     approve_p.add_argument("job_id")
     approve_p.add_argument("--json", action="store_true")
 

@@ -204,7 +204,7 @@ def run_precheck(settings: Settings, job: dict[str, Any], directory: Path) -> di
         job["stage"] = "generate"
         job["note"] = (
             f"预检通过 {n} 段{extra}；对照在 prompts/*.md，"
-            "审完后 resume 开始生成草稿"
+            "审完后出试片"
         )
         save_status(job, directory)
         return job

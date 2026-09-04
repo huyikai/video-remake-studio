@@ -319,7 +319,7 @@ def rerun_drafts(settings: Settings, job_id: str, clip_ids: list[str] | None = N
         return mock_draft(settings, job_id, clip_ids)
     directory, job = get_job(settings, job_id)
     if job.get("stages", {}).get("precheck", {}).get("status") != "done":
-        raise IngestGateError("预检还没过，不能出草稿")
+        raise IngestGateError("预检还没过，不能出试片")
     path = job_generate_path(directory, job)
     clips = _clips(directory)
     wanted = [c for c in (clip_ids or []) if c]
@@ -346,7 +346,7 @@ def run_finals(settings: Settings, job_id: str) -> dict:
     directory, job = get_job(settings, job_id)
     clips = _clips(directory)
     if not clips or not quality_complete(directory, clips, "draft"):
-        raise IngestGateError("草稿还没齐，不能出成片")
+        raise IngestGateError("试片还没齐，不能出成片")
     return resume_download(settings, job_id, force_quality="final")
 
 

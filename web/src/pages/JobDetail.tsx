@@ -4,7 +4,8 @@ import { useDefaultLayout } from "react-resizable-panels";
 import Dialog from "../components/Dialog";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable";
 import { api } from "../lib/api";
-import { cn, fileUrl, fmtDur, fmtTime } from "../lib/utils";
+import { dispatchPrimaryAction, primaryActionDisabled, primaryActionLabel } from "../lib/pipeline";
+import { cn, fileUrl, fmtDur, fmtTime, jobStateLabel, modeLabel, stageStatusLabel } from "../lib/utils";
 
 const STAGES = ["download", "pagemeta", "understand", "script", "precheck", "generate", "finish"] as const;
 type StageId = (typeof STAGES)[number];
@@ -17,26 +18,6 @@ const STAGE_LABEL: Record<string, string> = {
   precheck: "预检",
   generate: "视频生成",
   finish: "交付成片",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "等待",
-  running: "运行中",
-  done: "完成",
-  skipped: "跳过",
-  waiting: "等待环境",
-  failed: "失败",
-  error: "失败",
-  dirty: "待更新",
-};
-
-const JOB_STATE: Record<string, string> = {
-  running: "运行中",
-  paused: "已暂停",
-  failed: "失败",
-  cancelled: "已取消",
-  done: "完成",
-  pending: "等待",
 };
 
 type StageRecord = { status: string; error?: string | null };
@@ -67,6 +48,7 @@ type JobDetailData = {
   stages?: Record<string, StageRecord>;
   clips?: ClipRow[];
   dirty_clip_ids?: string[];
+  next_action?: string;
   media?: { source?: string | null; draft?: string | null; final?: string | null; cover?: string | null; ass?: string | null };
   events?: { at: string; kind: string; clip_id?: string; detail?: string; quality?: string }[];
   precheck?: { ok?: boolean; errors?: string[]; warnings?: string[] };
@@ -78,10 +60,11 @@ type ClipBiz = "ready" | "pending" | "generating" | "failed";
 type DetailKind = "understand" | "precheck" | "progress" | null;
 
 function stageTone(status?: string) {
-  if (status === "done" || status === "skipped") return "text-ok";
-  if (status === "running") return "text-tungsten";
-  if (status === "failed" || status === "error") return "text-bad";
-  if (status === "waiting" || status === "dirty") return "text-warn";
+  const key = (status || "").toLowerCase();
+  if (key === "done" || key === "skipped") return "text-ok";
+  if (key === "running") return "text-tungsten";
+  if (key === "failed" || key === "error") return "text-bad";
+  if (key === "waiting" || key === "dirty" || key === "paused" || key === "pause") return "text-warn";
   return "text-muted";
 }
 
@@ -277,9 +260,17 @@ export default function JobDetail() {
   const pendingClips = clips.filter((clip) => clipBiz(clip, dirty) === "pending");
   const failedClips = clips.filter((clip) => clipBiz(clip, dirty) === "failed");
   const missingScripts = clips.filter((clip) => clip.has_script === false);
-  const canBatchScripts = clips.length === 0 ? job?.stages?.script?.status !== "done" : missingScripts.length > 0;
-  const canBatchVideos = clips.length > 0;
+  const understandDone = ["done", "skipped"].includes(job?.stages?.understand?.status || "");
+  const precheckDone = job?.stages?.precheck?.status === "done";
+  const canBatchScripts = understandDone && missingScripts.length > 0;
   const canBatchAi = clips.some((clip) => clip.has_script);
+  const canBatchVideos = precheckDone;
+  const showBatch = canBatchScripts || canBatchAi || canBatchVideos;
+  const generateLocked = Boolean(job?.running) || busyAction === "primary" || busyAction === "batch";
+
+  useEffect(() => {
+    if (!showBatch) setBatchOpen(false);
+  }, [showBatch]);
 
   const previewRel = useMemo(() => {
     if (!job) return null;
@@ -372,11 +363,14 @@ export default function JobDetail() {
   }
 
   async function runPrimary() {
+    if (!job) return;
     setBusyAction("primary");
     setErr("");
     try {
-      if (job?.stages?.precheck?.status === "done" && pendingClips.length) await api.draft(id, pendingClips.map((clip) => clip.id));
-      else await api.resume(id);
+      const clipIds = (job.dirty_clip_ids || []).length
+        ? job.dirty_clip_ids || []
+        : clips.filter((clip) => clip.draft.status !== "done").map((clip) => clip.id);
+      await dispatchPrimaryAction(id, job, clipIds);
       await refresh();
     } catch (error) {
       setErr((error as Error).message);
@@ -404,7 +398,7 @@ export default function JobDetail() {
   const sourceSrc = fileUrl(job.id, job.media?.source);
   const finalSrc = fileUrl(job.id, job.media?.final);
   const coverSrc = fileUrl(job.id, job.media?.cover);
-  const primaryDisabled = Boolean(busyAction) || Boolean(job.running) || (job.state === "done" && !dirty.length);
+  const primaryDisabled = Boolean(busyAction) || primaryActionDisabled(job);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-bg">
@@ -418,27 +412,17 @@ export default function JobDetail() {
             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
               <h1 className="font-semibold tracking-tight">任务详情</h1>
               <span className="truncate font-mono text-xs text-muted">{job.id}</span>
-              <span className="rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 font-mono text-[11px] text-tungsten">{(job.mode || "real").toUpperCase()}</span>
+              <span className="rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 text-[11px] text-tungsten">{modeLabel(job.mode)}</span>
               <span className="truncate text-xs text-muted">{job.source?.kind === "url" ? "URL 输入" : "本地输入"} · {job.generate_path || job.options?.generate_path || "未指定"} · {job.options?.aspect_ratio || "16:9"}</span>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <div className="flex items-center gap-2 text-xs">
-              <span className={cn("font-medium", stageTone(job.state))}>{JOB_STATE[job.state] || job.state}</span>
+              <span className={cn("font-medium", stageTone(job.state))}>{jobStateLabel(job.state)}</span>
               {dirty.length ? <span className="text-warn">未应用 {dirty.length}</span> : null}
               {job.running ? <button type="button" className="text-tungsten hover:underline" onClick={() => setDetail("progress")}>处理中</button> : null}
               <span className={connection === "live" ? "text-ok" : connection === "offline" ? "text-bad" : "text-warn"}>{connection === "live" ? "已连接" : connection === "offline" ? "连接中断" : "连接中"}</span>
               {connection === "offline" ? <button type="button" className="text-tungsten hover:underline" onClick={() => setReconnectKey((value) => value + 1)}>重连</button> : null}
-            </div>
-            <div className="relative" ref={batchRef}>
-              <button type="button" className="rounded-md border border-line px-3 py-1 text-sm text-muted hover:border-tungsten/60 hover:text-text" onClick={() => setBatchOpen((open) => !open)}>批量操作</button>
-              {batchOpen ? (
-                <div className="absolute right-0 z-40 mt-2 w-52 rounded-lg border border-line bg-surface p-1 shadow-xl">
-                  <button type="button" disabled={!canBatchScripts} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={!canBatchScripts ? "当前片段都已有脚本" : undefined} onClick={() => openBatch("scripts")}>批量生成脚本</button>
-                  <button type="button" disabled={!canBatchAi} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={!canBatchAi ? "还没有可修改的脚本" : undefined} onClick={() => openBatch("ai")}>批量修改脚本</button>
-                  <button type="button" disabled={!canBatchVideos} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={!canBatchVideos ? "当前还没有片段" : undefined} onClick={() => openBatch("videos")}>批量生成视频</button>
-                </div>
-              ) : null}
             </div>
           </div>
         </div>
@@ -456,7 +440,7 @@ export default function JobDetail() {
                   </span>
                   <span className="flex shrink-0 items-center gap-2 text-[11px] leading-none">
                     {isCurrent ? <span className="text-tungsten">当前</span> : isViewing ? <span className="text-muted">查看中</span> : null}
-                    <span className={stageTone(status)}>{STATUS_LABEL[status] || status}</span>
+                    <span className={stageTone(status)}>{stageStatusLabel(status)}</span>
                   </span>
                 </button>
               );
@@ -535,7 +519,7 @@ export default function JobDetail() {
                 onEdit={editScript}
                 onAi={() => { setAiScope(current ? [current.id] : []); setAiOpen(true); }}
                 onSave={() => void save()}
-                busy={Boolean(busyAction) || Boolean(job.running)}
+                busy={Boolean(busyAction)}
               />
             ) : null}
             {shownStage === "precheck" ? (
@@ -564,9 +548,27 @@ export default function JobDetail() {
           <div className="mt-2 flex shrink-0 items-center justify-between gap-3">
             <p className="min-w-0 truncate text-xs text-bad">{err}</p>
             <p className="min-w-0 truncate text-xs text-ok">{msg}</p>
-            <div className="ml-auto flex gap-2">
+            <div className="ml-auto flex items-center gap-2">
+              {showBatch ? (
+                <div className="relative" ref={batchRef}>
+                  <button type="button" className="rounded-md border border-line px-3 py-2 text-sm text-muted hover:border-tungsten/60 hover:text-text" onClick={() => setBatchOpen((open) => !open)}>批量操作</button>
+                  {batchOpen ? (
+                    <div className="absolute right-0 bottom-full z-40 mb-2 w-52 rounded-lg border border-line bg-surface p-1 shadow-xl">
+                      {canBatchScripts ? (
+                        <button type="button" disabled={generateLocked} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={generateLocked ? "任务正在处理" : undefined} onClick={() => openBatch("scripts")}>{generateLocked ? "批量生成脚本（处理中）" : "批量生成脚本"}</button>
+                      ) : null}
+                      {canBatchAi ? (
+                        <button type="button" className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text" onClick={() => openBatch("ai")}>批量修改脚本</button>
+                      ) : null}
+                      {canBatchVideos ? (
+                        <button type="button" disabled={generateLocked} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={generateLocked ? "任务正在处理" : undefined} onClick={() => openBatch("videos")}>{generateLocked ? "批量生成视频（处理中）" : "批量生成视频"}</button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <button type="button" className="rounded-md border border-line px-3 py-2 text-sm text-bad" onClick={() => { if (window.confirm("打断任务并放弃？已有产物会保留。")) void api.cancel(id).then(refresh); }}>放弃任务</button>
-              <button type="button" className="rounded-md bg-tungsten px-4 py-2 text-sm font-medium text-ink disabled:opacity-50" disabled={primaryDisabled} onClick={() => void runPrimary()}>{busyAction === "primary" || job.running ? "处理中..." : dirty.length ? "继续处理修改" : job.state === "done" ? "已完成" : "继续任务"}</button>
+              <button type="button" className="rounded-md bg-tungsten px-4 py-2 text-sm font-medium text-ink disabled:opacity-50" disabled={primaryDisabled} onClick={() => void runPrimary()}>{busyAction === "primary" || job.running ? "处理中..." : primaryActionLabel(job)}</button>
             </div>
           </div>
         </main>
@@ -579,7 +581,7 @@ export default function JobDetail() {
               <p className="mb-2 text-sm font-medium">生成目标</p>
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className={cn("rounded-lg border p-3 text-sm", videoTarget === "draft" ? "border-tungsten bg-tungsten/10" : "border-line")}>
-                  <input type="radio" className="mr-2" checked={videoTarget === "draft"} onChange={() => { setVideoTarget("draft"); const rec = recommendedIds("videos", "draft"); setPicked(rec); setShowOthers(!rec.length); }} />草稿
+                  <input type="radio" className="mr-2" checked={videoTarget === "draft"} onChange={() => { setVideoTarget("draft"); const rec = recommendedIds("videos", "draft"); setPicked(rec); setShowOthers(!rec.length); }} />试片
                   <span className="mt-1 block text-xs text-muted">用于快速预览和审阅</span>
                 </label>
                 <label className={cn("rounded-lg border p-3 text-sm", videoTarget === "final" ? "border-tungsten bg-tungsten/10" : "border-line")}>
@@ -590,7 +592,7 @@ export default function JobDetail() {
             </div>
           ) : null}
           <p className="mb-3 text-sm text-muted">
-            {batchKind === "scripts" ? "只会为还没有脚本的片段生成，已有脚本会被跳过。" : batchKind === "ai" ? "选中的片段会使用同一条修改需求，确认后先预览，不会自动生成视频。" : `${videoTarget === "final" ? "成片" : "草稿"}推荐项已默认选中。`}
+            {batchKind === "scripts" ? "只会为还没有脚本的片段生成，已有脚本会被跳过。" : batchKind === "ai" ? "选中的片段会使用同一条修改需求，确认后先预览，不会自动生成视频。" : `${videoTarget === "final" ? "成片" : "试片"}推荐项已默认选中。`}
             已选择 {picked.length} 个。
           </p>
           <ClipPicker clips={clips} dirty={dirty} picked={picked} setPicked={setPicked} recommended={recommendedIds(batchKind)} showOthers={showOthers} setShowOthers={setShowOthers} target={batchKind === "videos" ? videoTarget : "draft"} kind={batchKind} />
@@ -600,10 +602,10 @@ export default function JobDetail() {
             <button
               type="button"
               className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:opacity-50"
-              disabled={(batchKind !== "scripts" && !picked.length) || Boolean(busyAction)}
+              disabled={(batchKind !== "scripts" && !picked.length) || Boolean(busyAction) || (batchKind !== "ai" && generateLocked)}
               onClick={() => { if (riskyPicked.length && !confirmRisk) { setConfirmRisk(true); return; } void runBatch(); }}
             >
-              {busyAction === "batch" ? "处理中..." : batchKind === "videos" ? (videoTarget === "final" ? "生成成片" : "生成草稿") : batchKind === "ai" ? "填写修改需求" : "生成脚本"}
+              {busyAction === "batch" || (batchKind !== "ai" && generateLocked) ? "处理中..." : batchKind === "videos" ? (videoTarget === "final" ? "生成成片" : "生成试片") : batchKind === "ai" ? "填写修改需求" : "生成脚本"}
             </button>
           </div>
         </Dialog>
@@ -665,7 +667,7 @@ function DownloadWorkspace({ job, mediaSrc, status }: { job: JobDetailData; medi
     <div className="flex min-h-0 flex-1 flex-col p-4">
       <div className="mb-3 flex shrink-0 items-center justify-between">
         <h3 className="font-medium">输入与原片</h3>
-        <span className={cn("text-xs", stageTone(status))}>{STATUS_LABEL[status] || status}</span>
+        <span className={cn("text-xs", stageTone(status))}>{stageStatusLabel(status)}</span>
       </div>
       <div className="mb-3 grid shrink-0 gap-2 sm:grid-cols-3">
         <Metric label="输入" value={job.source?.kind === "url" ? "URL" : "本地文件"} />
@@ -686,7 +688,7 @@ function PageMetaWorkspace({ job, status }: { job: JobDetailData; status: string
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
       <div className="flex items-center justify-between">
         <h3 className="font-medium">页面信息</h3>
-        <span className={cn("text-xs", stageTone(status))}>{STATUS_LABEL[status] || status}</span>
+        <span className={cn("text-xs", stageTone(status))}>{stageStatusLabel(status)}</span>
       </div>
       <div className="mt-4 min-h-0 flex-1 overflow-y-auto text-sm leading-6 text-muted">
         {skipped ? <p>本地文件会跳过页面抓取，只保留输入路径和探测结果。</p> : <p>已记录 URL。Mock 模式不会访问网络，只保存用户填写的地址。</p>}
@@ -710,7 +712,7 @@ function UnderstandWorkspace({
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium">理解摘要</h3>
         <div className="flex items-center gap-3">
-          <span className={cn("text-xs", stageTone(status))}>{STATUS_LABEL[status] || status}</span>
+          <span className={cn("text-xs", stageTone(status))}>{stageStatusLabel(status)}</span>
           <button type="button" className="text-xs text-tungsten hover:underline" onClick={onDetail}>查看详情</button>
         </div>
       </div>
@@ -741,7 +743,7 @@ function PrecheckWorkspace({
       <div className="flex items-center justify-between gap-3">
         <h3 className="font-medium">预检结果</h3>
         <div className="flex items-center gap-3">
-          <span className={cn("text-xs", stageTone(status))}>{STATUS_LABEL[status] || status}</span>
+          <span className={cn("text-xs", stageTone(status))}>{stageStatusLabel(status)}</span>
           <button type="button" className="text-xs text-tungsten hover:underline" onClick={onDetail}>查看详细报告</button>
         </div>
       </div>
@@ -771,14 +773,14 @@ function GenerateOverview({ job, clips, dirty }: { job: JobDetailData; clips: Cl
         <Metric label="待生成" value={String(pending)} />
         <Metric label="失败" value={String(failed)} />
       </div>
-      <p className="mt-4 text-sm text-muted">批量生成请使用顶部「批量操作」。左侧点击片段后，这里会进入该片段的视频监视区。</p>
+      <p className="mt-4 text-sm text-muted">需要批量时，用右下角「批量操作」。左侧点击片段后，这里会进入该片段的视频监视区。</p>
       <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
         {clips.map((clip) => {
           const status = clipBiz(clip, dirty);
           return (
             <div key={clip.id} className="mb-2 flex items-center justify-between rounded-lg border border-line px-3 py-2 text-sm">
               <span className="font-mono text-xs">{clip.id}</span>
-              <span className="text-xs text-muted">草稿 {STATUS_LABEL[clip.draft.status] || clip.draft.status} · 成片 {STATUS_LABEL[clip.final.status] || clip.final.status}</span>
+              <span className="text-xs text-muted">试片 {stageStatusLabel(clip.draft.status)} · 成片 {stageStatusLabel(clip.final.status)}</span>
               <span className={cn("text-xs", status === "ready" ? "text-ok" : status === "pending" ? "text-warn" : status === "failed" ? "text-bad" : "text-tungsten")}>{clipBizLabel(status)}</span>
             </div>
           );
@@ -807,17 +809,17 @@ function VideoMonitor({
         <div className="flex items-center gap-1 rounded-lg bg-panel p-1">
           {(["source", "draft", "final"] as const).map((kind) => {
             const available = kind === "source" ? sourceReady : Boolean(current[kind]?.file);
-            return <button key={kind} type="button" disabled={!available} className={cn("rounded-md px-3 py-1.5 text-sm", preview === kind ? "bg-surface text-text shadow-sm" : "text-muted", !available && "opacity-40")} onClick={() => setPreview(kind)}>{kind === "source" ? "原片" : kind === "draft" ? "草稿" : "成片"}</button>;
+            return <button key={kind} type="button" disabled={!available} className={cn("rounded-md px-3 py-1.5 text-sm", preview === kind ? "bg-surface text-text shadow-sm" : "text-muted", !available && "opacity-40")} onClick={() => setPreview(kind)}>{kind === "source" ? "原片" : kind === "draft" ? "试片" : "成片"}</button>;
           })}
         </div>
         <button type="button" className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:border-tungsten/60 hover:text-text" onClick={onEdit}>编辑脚本</button>
       </div>
       <div className="min-h-0 flex-1 overflow-hidden rounded-lg bg-black">
-        {mediaSrc ? <video key={mediaSrc} className="h-full w-full object-contain" controls src={mediaSrc} /> : <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted">{preview === "source" ? "原片还没有准备好" : preview === "draft" ? "草稿还没有生成" : "成片还没有生成"}</div>}
+        {mediaSrc ? <video key={mediaSrc} className="h-full w-full object-contain" controls src={mediaSrc} /> : <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted">{preview === "source" ? "原片还没有准备好" : preview === "draft" ? "试片还没有生成" : "成片还没有生成"}</div>}
       </div>
       <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs text-muted">
         <span>{fmtTime(current.t0)} - {fmtTime(current.t1)} · 生成 {fmtTime(current.h3_seconds)}</span>
-        <span>草稿 {STATUS_LABEL[current.draft.status] || current.draft.status} · 成片 {STATUS_LABEL[current.final.status] || current.final.status}{stale ? " · 当前视频仍是旧版本" : ""}</span>
+        <span>试片 {stageStatusLabel(current.draft.status)} · 成片 {stageStatusLabel(current.final.status)}{stale ? " · 当前视频仍是旧版本" : ""}</span>
         {job.options?.review_mode === "full_auto" ? <span>自动交付</span> : null}
       </div>
     </div>
@@ -836,7 +838,7 @@ function FinishWorkspace({
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
       <div className="mb-3 flex shrink-0 items-center justify-between">
         <h3 className="font-medium">成片交付</h3>
-        <span className={cn("text-xs", stageTone(status))}>{STATUS_LABEL[status] || status}</span>
+        <span className={cn("text-xs", stageTone(status))}>{stageStatusLabel(status)}</span>
       </div>
       <div className="grid min-h-0 flex-1 gap-3 overflow-hidden lg:grid-cols-[minmax(0,1fr)_12rem]">
         <div className="min-h-0 overflow-hidden rounded-lg bg-black">
@@ -976,7 +978,7 @@ function ClipPicker({
     const status = clipBiz(clip, dirty);
     if (recommended.includes(clip.id) && status === "pending") return "推荐重新生成，当前视频对应旧脚本";
     if (recommended.includes(clip.id) && status === "failed") return "上次生成失败，建议重试";
-    if (target === "final" && clip.draft.status !== "done") return "尚未生成新草稿，请确认是否继续";
+    if (target === "final" && clip.draft.status !== "done") return "尚未生成新试片，请确认是否继续";
     if (clip.draft.status === "done") return "当前脚本和视频一致，可按需重生成";
     return "可按需加入本次处理";
   }
@@ -1001,7 +1003,7 @@ function ClipPicker({
           {showOthers ? <div className="mt-2">{others.map((clip) => row(clip, false))}</div> : null}
         </div>
       ) : null}
-      {!clips.length ? <p className="rounded-md border border-dashed border-line p-3 text-sm text-muted">当前还没有片段。继续任务后会生成脚本片段。</p> : null}
+      {!clips.length ? <p className="rounded-md border border-dashed border-line p-3 text-sm text-muted">当前还没有片段。点「生成脚本」后会出现片段。</p> : null}
     </div>
   );
 }

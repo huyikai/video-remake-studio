@@ -9,7 +9,7 @@ from typing import Any
 
 from vrs.aspect import aspect_label
 from vrs.h3grid import normalize_generate_path
-from vrs.jobstore import get_job, iter_jobs
+from vrs.jobstore import get_job, iter_jobs, job_dir
 from vrs.lock import JobLock
 from vrs.promptcheck import iter_clip_speech
 from vrs.settings import Settings
@@ -149,7 +149,55 @@ def _media(directory: Path, job: dict[str, Any], path: str) -> dict[str, str | N
     }
 
 
-def summarize_job(job: dict[str, Any]) -> dict[str, Any]:
+def next_primary_action(job: dict[str, Any], *, dirty: bool = False, running: bool = False) -> str:
+    state = str(job.get("state") or "").lower()
+    if running or state == "running":
+        return "busy"
+    if state == "done":
+        return "done"
+    if state in {"cancelled", "canceled"}:
+        return "cancelled"
+    if state in {"failed", "error"}:
+        return "retry"
+    if dirty:
+        return "redraft"
+    stages = job.get("stages") or {}
+
+    def status(name: str) -> str:
+        rec = stages.get(name)
+        if isinstance(rec, dict):
+            return str(rec.get("status") or "")
+        return ""
+
+    for name in ("download", "pagemeta", "understand", "script", "precheck"):
+        if status(name) not in {"done", "skipped"}:
+            return name
+    if status("generate") not in {"done", "skipped"}:
+        return "draft"
+    if status("finish") not in {"done", "skipped"}:
+        return "final"
+    return "done"
+
+
+def _dirty_clip_ids(directory: Path, job: dict[str, Any]) -> list[str]:
+    clips = list((_load(directory / "clips.json") or {}).get("clips") or [])
+    if not clips:
+        return []
+    try:
+        path = job_generate_path(directory, job)
+    except Exception:
+        return []
+    progress = _load(directory / "generate.json") or {}
+    dirty: list[str] = []
+    for clip in clips:
+        draft = _clip_quality_status(directory, clip, path, "draft", progress)
+        final = _clip_quality_status(directory, clip, path, "final", progress)
+        if draft["dirty"] or final["dirty"]:
+            dirty.append(str(clip["id"]))
+    return dirty
+
+
+def summarize_job(job: dict[str, Any], *, dirty: bool = False, running: bool = False) -> dict[str, Any]:
     stages = job.get("stages") or {}
     done = sum(1 for rec in stages.values() if isinstance(rec, dict) and rec.get("status") in {"done", "skipped"})
     return {
@@ -166,12 +214,18 @@ def summarize_job(job: dict[str, Any]) -> dict[str, Any]:
         "stages_done": done,
         "stages_total": len(stages) or 7,
         "need_aspect_confirm": bool(job.get("need_aspect_confirm")),
+        "next_action": next_primary_action(job, dirty=dirty, running=running),
     }
 
 
 def list_jobs_payload(settings: Settings) -> dict[str, Any]:
     running = occupied_job_id(settings)
-    jobs = [summarize_job(job) for job in iter_jobs(settings)]
+    jobs: list[dict[str, Any]] = []
+    for job in iter_jobs(settings):
+        job_id = str(job.get("id") or "")
+        directory = job_dir(settings, job_id) if job_id else None
+        dirty = bool(directory and directory.is_dir() and _dirty_clip_ids(directory, job))
+        jobs.append(summarize_job(job, dirty=dirty, running=bool(job_id and running == job_id)))
     return {"jobs": jobs, "running_job_id": running}
 
 
@@ -260,6 +314,9 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
         "generate_path": path,
         "clips": rows,
         "dirty_clip_ids": dirty_ids,
+        "next_action": next_primary_action(
+            job, dirty=bool(dirty_ids), running=occupied_job_id(settings) == job_id
+        ),
         "media": _media(directory, job, path),
         "events": list(progress.get("events") or [])[-40:],
         "precheck": {

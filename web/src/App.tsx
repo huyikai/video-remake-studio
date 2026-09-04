@@ -9,23 +9,15 @@ function Shell() {
   const { setOpen } = useUi();
   return (
     <div className="flex h-full flex-col bg-bg text-text">
-      <header className="flex min-h-16 items-center justify-between border-b border-line bg-surface/80 px-5 backdrop-blur">
-        <NavLink to="/" className="font-semibold tracking-wide">
+      <header className="grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-b border-line bg-surface/80 px-5">
+        <NavLink to="/" className="justify-self-start font-semibold tracking-wide">
           Video Remake Studio
         </NavLink>
-        <nav className="flex items-center gap-1 text-sm text-muted">
-          <NavLink to="/" className={({ isActive }) => `rounded px-3 py-2 ${isActive ? "bg-panel text-text" : "hover:bg-panel hover:text-text"}`}>
-            任务列表
-          </NavLink>
-          <button type="button" className="rounded px-3 py-2 hover:bg-panel hover:text-text" onClick={() => setOpen("new")}>
-            新建任务
-          </button>
-          <button type="button" className="rounded px-3 py-2 hover:bg-panel hover:text-text" onClick={() => setOpen("settings")}>
-            设置
-          </button>
-        </nav>
+        <StatusBar />
+        <button type="button" className="justify-self-end rounded px-3 py-2 text-sm text-muted hover:bg-panel hover:text-text" onClick={() => setOpen("settings")}>
+          设置
+        </button>
       </header>
-      <StatusBar />
       <main className="min-h-0 flex-1 overflow-hidden">
         <Outlet />
       </main>

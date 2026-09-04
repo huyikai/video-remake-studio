@@ -376,7 +376,8 @@ def _generate(settings: Settings, job: dict[str, Any], directory: Path, quality:
     mark_stage(job, directory, "generate", "done")
     job["state"] = "paused"
     job["stage"] = "finish"
-    job["note"] = f"Mock {quality} 已完成 {len(clips)} 段，等待下一步操作"
+    label = "试片" if quality == "draft" else "成片"
+    job["note"] = f"Mock {label}已完成 {len(clips)} 段，等待下一步操作"
     save_status(job, directory)
     return True
 
@@ -465,12 +466,10 @@ def start_created(settings: Settings, job_id: str) -> None:
 
 def resume_now(settings: Settings, job_id: str) -> dict[str, Any]:
     directory, job = get_job(settings, job_id)
-    if _quality_ready(directory, "draft"):
-        job["state"] = "paused"
-        job["stage"] = "finish"
-        job["note"] = "Mock 草稿已齐，点击出成片继续"
-        save_status(job, directory)
+    if job.get("stages", {}).get("finish", {}).get("status") == "done":
         return job
+    if _quality_ready(directory, "draft"):
+        return _run(settings, job_id, "final")
     job = _run(settings, job_id, "download")
     if job.get("stages", {}).get("precheck", {}).get("status") != "done":
         return job
@@ -535,7 +534,7 @@ def _seed_job(settings: Settings, label: str, state: str) -> None:
     elif state == "draft":
         _generate_seed_media(settings, job, directory, "draft")
         mark_stage(job, directory, "generate", "done")
-        job["state"], job["stage"], job["note"] = "paused", "finish", "草稿已完成，等待审片"
+        job["state"], job["stage"], job["note"] = "paused", "finish", "试片已完成，等待审片"
     elif state == "done":
         _generate_seed_media(settings, job, directory, "draft")
         _generate_seed_media(settings, job, directory, "final")

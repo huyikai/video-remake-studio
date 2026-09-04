@@ -50,7 +50,7 @@ export default function SettingsPage({ onClose }: Props) {
   async function save() {
     if (!form) return;
     setErr("");
-    if (form.mode === "real" && !window.confirm("REAL 模式会调用真实模型与 GPU，确定切换吗？")) return;
+    if (form.mode === "real" && !window.confirm("真实模式会调用真实模型与 GPU，确定切换吗？")) return;
     setSaving(true);
     try {
       let mockFaults: Record<string, unknown> = {};
@@ -96,8 +96,8 @@ export default function SettingsPage({ onClose }: Props) {
         <div className="space-y-3 text-sm">
           <section className="rounded-lg border border-tungsten/40 bg-tungsten/10 p-4">
             <div className="flex items-center justify-between gap-3">
-              <div><p className="text-xs uppercase tracking-[0.16em] text-muted">运行环境</p><h3 className="mt-1 font-semibold">执行模式</h3><p className="mt-1 text-xs text-muted">Mock 不调用真实模型，Real 会检查本机推理环境。</p></div>
-              <select className="rounded border border-line bg-surface p-2 font-mono text-sm text-text" value={form.mode} onChange={(e) => set("mode", e.target.value as SettingsView["mode"])}><option value="mock">MOCK</option><option value="real">REAL</option></select>
+              <div><p className="text-xs uppercase tracking-[0.16em] text-muted">运行环境</p><h3 className="mt-1 font-semibold">执行模式</h3><p className="mt-1 text-xs text-muted">模拟不调用真实模型，真实模式会检查本机推理环境。</p></div>
+              <select className="rounded border border-line bg-surface p-2 text-sm text-text" value={form.mode} onChange={(e) => set("mode", e.target.value as SettingsView["mode"])}><option value="mock">模拟</option><option value="real">真实</option></select>
             </div>
             {form.mode === "mock" ? <div className="mt-4 space-y-3 border-t border-line/60 pt-4"><label className="block text-muted">模拟速度<select className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.mock_speed} onChange={(e) => set("mock_speed", e.target.value as SettingsView["mock_speed"])}><option value="0.25x">0.25x</option><option value="1x">1x</option><option value="4x">4x</option></select></label><label className="block text-muted">故障场景 JSON<textarea className="mt-1 h-20 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text" value={faultText} onChange={(e) => setFaultText(e.target.value)} /></label><p className="text-xs text-muted">示例：{"{\"generate\":{\"clip_id\":\"h3_01\",\"count\":1,\"type\":\"timeout\"}}"}</p></div> : null}
           </section>
