@@ -145,6 +145,7 @@ def _media(directory: Path, job: dict[str, Any], path: str) -> dict[str, str | N
         "draft": f"output/{path}/draft.mp4" if _exists(out / "draft.mp4") else None,
         "final": f"output/{path}/final.mp4" if _exists(out / "final.mp4") else None,
         "cover": cover,
+        "ass": f"output/{path}/final.ass" if _exists(out / "final.ass") else None,
     }
 
 
@@ -230,6 +231,7 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
         final = _clip_quality_status(directory, clip, path, "final", progress)
         if draft["dirty"] or final["dirty"]:
             dirty_ids.append(str(clip["id"]))
+        clip_id = str(clip.get("id"))
         rows.append(
             {
                 "id": clip.get("id"),
@@ -241,6 +243,7 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
                 "h3_frames": clip.get("h3_frames"),
                 "padded": clip.get("padded"),
                 "cast_reset": clip.get("cast_reset"),
+                "has_script": (directory / "prompts" / f"{clip_id}.txt").is_file(),
                 "draft": draft,
                 "final": final,
             }

@@ -13,6 +13,8 @@
   --color-warn: var(--warn);
   --color-bad: var(--bad);
   --color-ok: var(--ok);
+  --color-border: var(--line);
+  --color-ring: var(--accent);
 }
 
 :root {

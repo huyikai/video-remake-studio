@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api, type JobSummary } from "../lib/api";
 import { cn, fmtDur } from "../lib/utils";
 import { useUi } from "../ui";
@@ -28,6 +28,10 @@ export default function JobList() {
   const [running, setRunning] = useState<string | null>(null);
   const [err, setErr] = useState("");
   const nav = useNavigate();
+  const location = useLocation();
+  const requestedId = (location.state as { selectedJobId?: string } | null)?.selectedJobId;
+  const [selectedId, setSelectedId] = useState<string | null>(requestedId ?? null);
+  const overviewRef = useRef<HTMLElement>(null);
   const { setOpen } = useUi();
 
   const load = () =>
@@ -45,14 +49,37 @@ export default function JobList() {
     return () => window.clearInterval(id);
   }, []);
 
-  const active = jobs.find((job) => job.id === running) || jobs[0];
+  useEffect(() => {
+    if (requestedId) setSelectedId(requestedId);
+  }, [requestedId]);
+
+  useEffect(() => {
+    if (!jobs.length) {
+      setSelectedId(null);
+      return;
+    }
+    setSelectedId((current) => {
+      if (current && jobs.some((job) => job.id === current)) return current;
+      if (running && jobs.some((job) => job.id === running)) return running;
+      return jobs[0].id;
+    });
+  }, [jobs, running]);
+
+  function selectJob(id: string) {
+    setSelectedId(id);
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      overviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  const active = jobs.find((job) => job.id === selectedId) || null;
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(19rem,25rem)_minmax(0,1fr)_minmax(17rem,22rem)]">
+    <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(19rem,25rem)_minmax(0,1fr)_minmax(17rem,22rem)] lg:overflow-hidden">
       <aside className="min-h-0 overflow-y-auto border-r border-line bg-panel/60 p-4">
         <div className="mb-5 flex items-start justify-between gap-3">
           <div>
             <p className="text-xs uppercase tracking-[0.18em] text-muted">工作空间</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">任务队列</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">任务列表</h1>
           </div>
           <button type="button" onClick={() => setOpen("new")} className="rounded-md bg-tungsten px-3 py-2 text-sm font-medium text-ink hover:opacity-90">
             新建
@@ -62,7 +89,12 @@ export default function JobList() {
         {err ? <p className="mb-4 rounded-md border border-bad/40 bg-bad/10 p-3 text-xs text-bad">{err}</p> : null}
         <div className="space-y-2">
           {jobs.map((job) => (
-            <Link key={job.id} to={`/jobs/${job.id}`} className={cn("block rounded-lg border border-line bg-surface p-3 hover:border-tungsten/60", active?.id === job.id && "border-tungsten/70 bg-tungsten/10")}>
+            <button
+              key={job.id}
+              type="button"
+              className={cn("block w-full rounded-lg border border-line bg-surface p-3 text-left hover:border-tungsten/60", active?.id === job.id && "border-tungsten/70 bg-tungsten/10")}
+              onClick={() => selectJob(job.id)}
+            >
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate font-mono text-xs">{job.id}</span>
                 <span className={cn("rounded px-2 py-0.5 text-[11px]", STATE[job.state] || STATE.pending)}>{job.state}</span>
@@ -73,12 +105,12 @@ export default function JobList() {
                 <span className="tabular-nums">{fmtDur(job.elapsed_sec)}</span>
               </div>
               <p className="mt-2 line-clamp-2 text-xs text-muted">{job.note}</p>
-            </Link>
+            </button>
           ))}
           {!jobs.length ? <p className="rounded-lg border border-dashed border-line p-5 text-sm text-muted">还没有任务。创建一个 Mock 任务开始演示。</p> : null}
         </div>
       </aside>
-      <section className="min-h-0 overflow-y-auto p-6">
+      <section ref={overviewRef} className="min-h-0 overflow-y-auto p-6">
         {active ? (
           <div className="mx-auto max-w-3xl">
             <p className="text-xs uppercase tracking-[0.18em] text-muted">当前任务</p>

@@ -10,13 +10,12 @@ function Shell() {
   return (
     <div className="flex h-full flex-col bg-bg text-text">
       <header className="flex min-h-16 items-center justify-between border-b border-line bg-surface/80 px-5 backdrop-blur">
-        <NavLink to="/" className="flex items-center gap-3 font-semibold tracking-wide">
-          <span className="flex h-8 w-8 items-center justify-center rounded-md bg-tungsten text-ink">V</span>
-          <span>Video Remake Studio</span>
+        <NavLink to="/" className="font-semibold tracking-wide">
+          Video Remake Studio
         </NavLink>
         <nav className="flex items-center gap-1 text-sm text-muted">
           <NavLink to="/" className={({ isActive }) => `rounded px-3 py-2 ${isActive ? "bg-panel text-text" : "hover:bg-panel hover:text-text"}`}>
-            任务队列
+            任务列表
           </NavLink>
           <button type="button" className="rounded px-3 py-2 hover:bg-panel hover:text-text" onClick={() => setOpen("new")}>
             新建任务

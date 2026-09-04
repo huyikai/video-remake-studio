@@ -10,9 +10,10 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "lucide-react": "^1.40.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-resizable-panels": "^3.0.2",
+    "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.6.1",
     "tailwind-merge": "^3.3.0"
   },
