@@ -11,7 +11,7 @@ import yaml
 
 from vrs.aspect import aspect_mismatch
 from vrs.cancel import request_cancel
-from vrs.h3grid import normalize_generate_path, snap_seconds
+from vrs.h3grid import merge_t2va_snapshot, normalize_generate_path, snap_seconds, t2va_defaults
 from vrs.jobstore import get_job, save_status
 from vrs.lock import JobLock, atomic_write_json
 from vrs.passb import assemble_txt
@@ -237,6 +237,11 @@ def settings_public(settings: Settings) -> dict[str, Any]:
         "smtp_host": smtp.get("host") or "",
         "smtp_has_password": bool(smtp.get("password")),
         "smtp_hint": "密码和账号请改 config/smtp.local.yaml 或环境变量 VRS_SMTP_*，页面不回显。",
+        "t2va": t2va_defaults(settings),
+        "t2va_workflows": [
+            {"id": "video_minimax_h3_t2v_turbo.json", "label": "T2VA Turbo"},
+            {"id": "video_minimax_h3_t2v.json", "label": "T2VA 非 LoRA"},
+        ],
     }
 
 
@@ -282,6 +287,14 @@ def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
     if body.get("gpu_memory_gb") is not None:
         h3 = dict(current.get("h3") or {})
         h3["gpu_memory_gb"] = float(body["gpu_memory_gb"])
+        current["h3"] = h3
+    if body.get("t2va") is not None:
+        try:
+            snapshot = merge_t2va_snapshot(settings, body.get("t2va") if isinstance(body.get("t2va"), dict) else None)
+        except ValueError as exc:
+            raise JobOpsError(str(exc)) from exc
+        h3 = dict(current.get("h3") or {})
+        h3["t2va"] = snapshot
         current["h3"] = h3
     smtp = dict(current.get("smtp") or {})
     if body.get("smtp_enabled") is not None:

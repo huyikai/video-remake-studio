@@ -85,6 +85,7 @@ def _mock_env(settings: Settings, stage: str) -> dict[str, Any]:
         _item("llm", True, "mock:llm", layer="live", needed=False),
     ]
     return {
+        "mode": settings.mode(),
         "stage": stage,
         "summary": f"MOCK 模式：当前需要 {current_need}",
         "install": install,
@@ -239,8 +240,11 @@ def collect_env(settings: Settings, *, stage: str = "idle") -> dict[str, Any]:
     workflows = [
         settings.h3.get("i2va_turbo", {}).get("workflow", "video_minimax_h3_i2v_turbo.json"),
         settings.h3.get("t2va_turbo", {}).get("workflow", "video_minimax_h3_t2v_turbo.json"),
+        (settings.h3.get("t2va") or {}).get("draft", {}).get("workflow", "video_minimax_h3_t2v_turbo.json"),
+        (settings.h3.get("t2va") or {}).get("final", {}).get("workflow", "video_minimax_h3_t2v.json"),
         settings.h3.get("ref2va", {}).get("workflow", "video_minimax_h3_r2v.json"),
     ]
+    workflows = list(dict.fromkeys(str(name) for name in workflows if name))
     missing_wf = []
     for name in workflows:
         candidate = h3_root / "workflows" / str(name)
@@ -324,6 +328,7 @@ def collect_env(settings: Settings, *, stage: str = "idle") -> dict[str, Any]:
         summary += f"；{names} 已配置、未运行（到该阶段再检查）"
 
     return {
+        "mode": settings.mode(),
         "stage": stage,
         "summary": summary,
         "install": install,

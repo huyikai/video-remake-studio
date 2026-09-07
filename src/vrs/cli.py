@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     run_p.add_argument(
         "--path",
         dest="generate_path",
-        default="i2va_turbo",
+        default="t2va",
         choices=list(GENERATE_PATHS),
     )
     run_p.add_argument("--json", action="store_true")
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                 review_mode=args.review_mode,
                 generate_path=args.generate_path,
             )
-        except (IngestGateError, BusyError) as exc:
+        except (IngestGateError, BusyError, ValueError) as exc:
             print(exc, file=sys.stderr)
             return 2
         if args.json:

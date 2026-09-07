@@ -101,6 +101,18 @@ def interrupt(settings: Settings, prompt_id: str | None = None) -> None:
         pass
 
 
+def free_vram(settings: Settings) -> None:
+    """卸掉 Comfy 已加载模型，把显存让给 VL。"""
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            client.post(
+                base_url(settings) + "/free",
+                json={"unload_models": True, "free_memory": True},
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def object_info(settings: Settings, *, cache: dict[str, Any] | None = None) -> dict[str, Any]:
     if cache is not None and cache.get("info"):
         return cache["info"]
@@ -190,6 +202,24 @@ def _history_done(entry: dict[str, Any]) -> bool:
     )
 
 
+def queue_has_prompt(settings: Settings, prompt_id: str) -> bool:
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(base_url(settings) + "/queue")
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:  # noqa: BLE001
+        return True
+    if not isinstance(payload, dict):
+        return True
+    target = str(prompt_id)
+    for bucket in (payload.get("queue_running"), payload.get("queue_pending")):
+        for item in bucket or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and str(item[1]) == target:
+                return True
+    return False
+
+
 def wait_history(
     settings: Settings,
     prompt_id: str,
@@ -197,30 +227,57 @@ def wait_history(
     timeout: float,
     abort: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    hard_cap = min(max(timeout, 7200.0), 10800.0)
+    hard_deadline = started + hard_cap
     url = base_url(settings) + f"/history/{prompt_id}"
-    while time.monotonic() < deadline:
+    while time.monotonic() < hard_deadline:
         if abort and abort():
             interrupt(settings, prompt_id)
             raise ComfyError("已取消")
+        entry: dict[str, Any] | None = None
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=30.0) as client:
                 response = client.get(url)
                 response.raise_for_status()
                 payload = response.json()
+            raw = payload.get(prompt_id) if isinstance(payload, dict) else None
+            if isinstance(raw, dict):
+                entry = raw
         except ComfyError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            raise ComfyError(f"读 history 失败：{exc}") from exc
-        entry = payload.get(prompt_id) if isinstance(payload, dict) else None
-        if isinstance(entry, dict) and _history_done(entry):
+        except Exception:
+            time.sleep(5.0)
+            continue
+        if entry is not None and _history_done(entry):
             err = _status_error(entry)
             if err:
                 raise ComfyError(err)
             return entry
+        now = time.monotonic()
+        if now >= deadline and not queue_has_prompt(settings, prompt_id):
+            time.sleep(5.0)
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    response = client.get(url)
+                    response.raise_for_status()
+                    payload = response.json()
+                raw = payload.get(prompt_id) if isinstance(payload, dict) else None
+                if isinstance(raw, dict) and _history_done(raw):
+                    err = _status_error(raw)
+                    if err:
+                        raise ComfyError(err)
+                    return raw
+            except ComfyError:
+                raise
+            except Exception:
+                pass
+            interrupt(settings, prompt_id)
+            raise ComfyError(f"生成超时（{int(now - started)}s）")
         time.sleep(2.0)
     interrupt(settings, prompt_id)
-    raise ComfyError(f"生成超时（{int(timeout)}s）")
+    raise ComfyError(f"生成超时（{int(hard_cap)}s）")
 
 
 def download_output(settings: Settings, history: dict[str, Any], dest: Path) -> Path:
@@ -311,7 +368,187 @@ def _input_names(info: dict[str, Any]) -> list[tuple[str, Any]]:
     return names
 
 
+def _as_link_row(item: Any) -> list[Any] | None:
+    if isinstance(item, (list, tuple)) and len(item) >= 5:
+        return [
+            int(item[0]),
+            int(item[1]),
+            int(item[2]),
+            int(item[3]),
+            int(item[4]),
+            item[5] if len(item) > 5 else "*",
+        ]
+    if isinstance(item, dict) and item.get("id") is not None:
+        return [
+            int(item["id"]),
+            int(item.get("origin_id") or 0),
+            int(item.get("origin_slot") or 0),
+            int(item.get("target_id") or 0),
+            int(item.get("target_slot") or 0),
+            item.get("type") or "*",
+        ]
+    return None
+
+
+def _subgraph_defs(workflow: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_defs = workflow.get("definitions")
+    if not isinstance(raw_defs, dict):
+        return {}
+    raw = raw_defs.get("subgraphs")
+    if isinstance(raw, list):
+        return {str(item.get("id")): item for item in raw if isinstance(item, dict) and item.get("id")}
+    if isinstance(raw, dict):
+        out: dict[str, dict[str, Any]] = {}
+        for key, item in raw.items():
+            if isinstance(item, dict):
+                out[str(item.get("id") or key)] = item
+        return out
+    return {}
+
+
+def _sync_sockets(nodes: list[dict[str, Any]], links: list[list[Any]]) -> None:
+    by_id = {int(node["id"]): node for node in nodes if "id" in node}
+    for node in nodes:
+        for inp in node.get("inputs") or []:
+            if isinstance(inp, dict):
+                inp["link"] = None
+        for out in node.get("outputs") or []:
+            if isinstance(out, dict):
+                out["links"] = []
+    for row in links:
+        origin = by_id.get(int(row[1]))
+        target = by_id.get(int(row[3]))
+        oslot, tslot, lid = int(row[2]), int(row[4]), int(row[0])
+        if origin is not None:
+            outs = origin.get("outputs") or []
+            if 0 <= oslot < len(outs) and isinstance(outs[oslot], dict):
+                bucket = outs[oslot].get("links")
+                if not isinstance(bucket, list):
+                    outs[oslot]["links"] = []
+                    bucket = outs[oslot]["links"]
+                bucket.append(lid)
+        if target is not None:
+            ins = target.get("inputs") or []
+            if 0 <= tslot < len(ins) and isinstance(ins[tslot], dict):
+                ins[tslot]["link"] = lid
+
+
+def _explode_subgraph(
+    node: dict[str, Any],
+    sub: dict[str, Any],
+    links: list[list[Any]],
+    max_node: int,
+    max_link: int,
+) -> tuple[list[dict[str, Any]], int, int]:
+    parent_id = int(node["id"])
+    inner = json.loads(json.dumps(sub.get("nodes") or []))
+    id_map: dict[int, int] = {}
+    copied: list[dict[str, Any]] = []
+    for child in inner:
+        if not isinstance(child, dict) or child.get("id") is None:
+            continue
+        old = int(child["id"])
+        max_node += 1
+        id_map[old] = max_node
+        child["id"] = max_node
+        copied.append(child)
+    sub_inputs = [item for item in (sub.get("inputs") or []) if isinstance(item, dict)]
+    sub_outputs = [item for item in (sub.get("outputs") or []) if isinstance(item, dict)]
+    parent_inputs = [item for item in (node.get("inputs") or []) if isinstance(item, dict)]
+    parent_outputs = [item for item in (node.get("outputs") or []) if isinstance(item, dict)]
+    incoming_by_name: dict[str, list[Any]] = {}
+    for slot, inp in enumerate(parent_inputs):
+        name = str(inp.get("name") or "")
+        found: list[Any] | None = None
+        link_id = inp.get("link")
+        if link_id is not None:
+            for row in links:
+                if int(row[0]) == int(link_id):
+                    found = row
+                    break
+        if found is None:
+            for row in links:
+                if int(row[3]) == parent_id and int(row[4]) == slot:
+                    found = row
+                    break
+        if name and found is not None:
+            incoming_by_name[name] = found
+    outgoing_by_name: dict[str, list[list[Any]]] = {}
+    for slot, out in enumerate(parent_outputs):
+        name = str(out.get("name") or "")
+        if not name:
+            continue
+        outgoing_by_name[name] = [row for row in links if int(row[1]) == parent_id and int(row[2]) == slot]
+    new_rows: list[list[Any]] = []
+    for raw in sub.get("links") or []:
+        row = _as_link_row(raw)
+        if row is None:
+            continue
+        oid, oslot, tid, tslot = int(row[1]), int(row[2]), int(row[3]), int(row[4])
+        kind = row[5] if len(row) > 5 else "*"
+        if oid == -10:
+            if 0 <= oslot < len(sub_inputs):
+                name = str(sub_inputs[oslot].get("name") or "")
+                parent_row = incoming_by_name.get(name)
+                if parent_row is not None and tid in id_map:
+                    parent_row[3] = id_map[tid]
+                    parent_row[4] = tslot
+            continue
+        if tid == -20:
+            if oid in id_map:
+                name = ""
+                if 0 <= tslot < len(sub_outputs):
+                    name = str(sub_outputs[tslot].get("name") or "")
+                targets = outgoing_by_name.get(name) or [
+                    prow for prow in links if int(prow[1]) == parent_id and int(prow[2]) == tslot
+                ]
+                for prow in targets:
+                    prow[1] = id_map[oid]
+                    prow[2] = oslot
+            continue
+        if oid not in id_map or tid not in id_map:
+            continue
+        max_link += 1
+        new_rows.append([max_link, id_map[oid], oslot, id_map[tid], tslot, kind])
+    links[:] = [row for row in links if int(row[1]) != parent_id and int(row[3]) != parent_id]
+    links.extend(new_rows)
+    return copied, max_node, max_link
+
+
+def expand_subgraphs(workflow: dict[str, Any]) -> dict[str, Any]:
+    """把 UI 子图节点拆成 Comfy /prompt 认识的普通节点。"""
+    by_id = _subgraph_defs(workflow)
+    if not by_id:
+        return workflow
+    nodes = [node for node in (workflow.get("nodes") or []) if isinstance(node, dict)]
+    links = [row for row in (_as_link_row(item) for item in (workflow.get("links") or [])) if row]
+    max_node = 0
+    max_link = 0
+    for node in nodes:
+        if node.get("id") is not None:
+            max_node = max(max_node, int(node["id"]))
+    for row in links:
+        max_link = max(max_link, int(row[0]))
+    for _ in range(8):
+        if not any(str(node.get("type") or "") in by_id for node in nodes):
+            break
+        next_nodes: list[dict[str, Any]] = []
+        for node in nodes:
+            sub = by_id.get(str(node.get("type") or ""))
+            if sub is None:
+                next_nodes.append(node)
+                continue
+            exploded, max_node, max_link = _explode_subgraph(node, sub, links, max_node, max_link)
+            next_nodes.extend(exploded)
+        nodes = next_nodes
+    _sync_sockets(nodes, links)
+    workflow["nodes"] = nodes
+    workflow["links"] = links
+    return workflow
+
+
 def ui_to_api(workflow: dict[str, Any], info: dict[str, Any]) -> dict[str, Any]:
+    workflow = expand_subgraphs(workflow)
     nodes = {int(n["id"]): n for n in workflow.get("nodes") or [] if isinstance(n, dict) and "id" in n}
     links = _links_by_id(workflow)
     prompt: dict[str, Any] = {}
@@ -383,8 +620,36 @@ def _title(node: dict[str, Any]) -> str:
     return str(node.get("title") or "")
 
 
-def patch_ui_workflow(
-    workflow: dict[str, Any],
+def _patch_h3_subgraph(
+    node: dict[str, Any], *, prompt: str, seconds: float, steps: int, seed: int
+) -> bool:
+    widgets = node.get("widgets_values")
+    if not isinstance(widgets, list) or len(widgets) < 5 or not isinstance(widgets[0], str):
+        return False
+    names = {
+        str(item.get("name") or "").lower()
+        for item in (node.get("inputs") or [])
+        if isinstance(item, dict)
+    }
+    labels = {
+        str(item.get("label") or "").lower()
+        for item in (node.get("inputs") or [])
+        if isinstance(item, dict)
+    }
+    if "steps" not in names and "steps" not in labels:
+        return False
+    widgets = list(widgets)
+    widgets[0] = prompt
+    if len(widgets) >= 6 and isinstance(widgets[3], (int, float)) and isinstance(widgets[4], (int, float)):
+        widgets[3] = float(seconds)
+        widgets[4] = int(steps)
+        widgets[5] = int(seed)
+    node["widgets_values"] = widgets
+    return True
+
+
+def _patch_node_list(
+    nodes: list[Any],
     *,
     prompt: str,
     seconds: float,
@@ -393,22 +658,27 @@ def patch_ui_workflow(
     aspect: str,
     seed: int,
     filename_prefix: str,
-    image_name: str | None = None,
-    low_vram: bool | None = None,
-    sampler: str | None = None,
-    scheduler: str | None = None,
-) -> dict[str, Any]:
-    """改 UI 工作流的 widgets_values，再交给 ui_to_api。"""
-    doc = json.loads(json.dumps(workflow))
-    image_set = False
-    for node in doc.get("nodes") or []:
+    image_name: str | None,
+    low_vram: bool | None,
+    sampler: str | None,
+    scheduler: str | None,
+    image_set: bool,
+) -> bool:
+    for node in nodes:
         if not isinstance(node, dict):
             continue
         class_type = str(node.get("type") or "")
         widgets = node.get("widgets_values")
         title = _title(node).lower()
         if class_type in {"MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"}:
-            node["widgets_values"] = [prompt] + list(widgets[1:] if isinstance(widgets, list) else [])
+            values = list(widgets) if isinstance(widgets, list) else []
+            if values:
+                values[0] = prompt
+                node["widgets_values"] = values
+            else:
+                node["widgets_values"] = [prompt]
+        elif _patch_h3_subgraph(node, prompt=prompt, seconds=seconds, steps=steps, seed=seed):
+            pass
         elif class_type == "PrimitiveStringMultiline" and "prompt" in title:
             node["widgets_values"] = [prompt]
         elif class_type == "PrimitiveFloat" and "duration" in title:
@@ -442,6 +712,48 @@ def patch_ui_workflow(
             node["widgets_values"] = widgets
         elif class_type == "KSamplerSelect" and sampler:
             node["widgets_values"] = [sampler]
+    return image_set
+
+
+def patch_ui_workflow(
+    workflow: dict[str, Any],
+    *,
+    prompt: str,
+    seconds: float,
+    steps: int,
+    megapixels: float,
+    aspect: str,
+    seed: int,
+    filename_prefix: str,
+    image_name: str | None = None,
+    low_vram: bool | None = None,
+    sampler: str | None = None,
+    scheduler: str | None = None,
+) -> dict[str, Any]:
+    """改 UI 工作流的 widgets_values，再交给 ui_to_api。"""
+    doc = json.loads(json.dumps(workflow))
+    kwargs = dict(
+        prompt=prompt,
+        seconds=seconds,
+        steps=steps,
+        megapixels=megapixels,
+        aspect=aspect,
+        seed=seed,
+        filename_prefix=filename_prefix,
+        image_name=image_name,
+        low_vram=low_vram,
+        sampler=sampler,
+        scheduler=scheduler,
+        image_set=False,
+    )
+    kwargs["image_set"] = _patch_node_list(doc.get("nodes") or [], **kwargs)
+    defs = doc.get("definitions") or {}
+    if isinstance(defs, dict):
+        subgraphs = defs.get("subgraphs")
+        if isinstance(subgraphs, list):
+            for sub in subgraphs:
+                if isinstance(sub, dict) and isinstance(sub.get("nodes"), list):
+                    kwargs["image_set"] = _patch_node_list(sub["nodes"], **kwargs)
     return doc
 
 

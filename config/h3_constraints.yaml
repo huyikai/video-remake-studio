@@ -15,7 +15,18 @@ i2va_turbo:
     megapixels: 0.9
     steps: 8
 
-# 不给关键帧，提示词直接从三字段开始
+# 文生视频家族：试片 Turbo、成片非 LoRA（可在设置里改，创建时写入任务快照）
+t2va:
+  draft:
+    workflow: video_minimax_h3_t2v_turbo.json
+    megapixels: 0.4
+    steps: 8
+  final:
+    workflow: video_minimax_h3_t2v.json
+    megapixels: 0.98
+    steps: 25
+
+# 旧任务 / 明示「全程 Turbo」路线：试片成片同一张 Turbo 图
 t2va_turbo:
   workflow: video_minimax_h3_t2v_turbo.json
   draft:

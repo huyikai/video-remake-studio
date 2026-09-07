@@ -70,3 +70,38 @@ export function stageStatusLabel(status: string | null | undefined) {
 export function modeLabel(mode: string | null | undefined) {
   return lookupLabel(mode, MODE_LABEL) || "未知";
 }
+
+const GENERATE_PATH_LABEL: Record<string, string> = {
+  t2va: "T2VA",
+  t2va_turbo: "T2VA Turbo",
+  i2va_turbo: "I2VA Turbo",
+  ref2va: "Ref2VA",
+};
+
+export function generatePathLabel(path: string | null | undefined) {
+  if (!path) return "未指定";
+  return GENERATE_PATH_LABEL[path] || path;
+}
+
+const DELETABLE_STATES = new Set([
+  "pending",
+  "paused",
+  "pause",
+  "waiting",
+  "done",
+  "failed",
+  "error",
+  "cancelled",
+  "canceled",
+]);
+
+export function jobDeletable(state: string | null | undefined, running = false) {
+  if (running) return false;
+  const key = (state || "pending").trim().toLowerCase();
+  if (key === "running") return false;
+  return DELETABLE_STATES.has(key);
+}
+
+export function deleteJobsConfirmMessage(count: number) {
+  return `将永久删除 ${count} 个任务及其磁盘文件，无法恢复`;
+}

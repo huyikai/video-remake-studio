@@ -121,6 +121,7 @@ def collect_metrics(
         foreign = True
         workflow_label = "Comfy 占用中（外部）"
     return {
+        "mode": settings.mode(),
         "gpu": gpu,
         "ram": {
             "used_bytes": int(mem.used),

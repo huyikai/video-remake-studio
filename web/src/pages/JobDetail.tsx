@@ -5,7 +5,7 @@ import Dialog from "../components/Dialog";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable";
 import { api } from "../lib/api";
 import { dispatchPrimaryAction, primaryActionDisabled, primaryActionLabel } from "../lib/pipeline";
-import { cn, fileUrl, fmtDur, fmtTime, jobStateLabel, modeLabel, stageStatusLabel } from "../lib/utils";
+import { cn, deleteJobsConfirmMessage, fileUrl, fmtDur, fmtTime, generatePathLabel, jobDeletable, jobStateLabel, modeLabel, stageStatusLabel } from "../lib/utils";
 
 const STAGES = ["download", "pagemeta", "understand", "script", "precheck", "generate", "finish"] as const;
 type StageId = (typeof STAGES)[number];
@@ -413,7 +413,7 @@ export default function JobDetail() {
               <h1 className="font-semibold tracking-tight">任务详情</h1>
               <span className="truncate font-mono text-xs text-muted">{job.id}</span>
               <span className="rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 text-[11px] text-tungsten">{modeLabel(job.mode)}</span>
-              <span className="truncate text-xs text-muted">{job.source?.kind === "url" ? "URL 输入" : "本地输入"} · {job.generate_path || job.options?.generate_path || "未指定"} · {job.options?.aspect_ratio || "16:9"}</span>
+              <span className="truncate text-xs text-muted">{job.source?.kind === "url" ? "URL 输入" : "本地输入"} · {generatePathLabel(job.generate_path || job.options?.generate_path)} · {job.options?.aspect_ratio || "16:9"}</span>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -568,6 +568,23 @@ export default function JobDetail() {
                 </div>
               ) : null}
               <button type="button" className="rounded-md border border-line px-3 py-2 text-sm text-bad" onClick={() => { if (window.confirm("打断任务并放弃？已有产物会保留。")) void api.cancel(id).then(refresh); }}>放弃任务</button>
+              <button
+                type="button"
+                className="rounded-md border border-bad/40 px-3 py-2 text-sm text-bad disabled:opacity-40"
+                disabled={!jobDeletable(job.state, Boolean(job.running)) || Boolean(busyAction)}
+                title={job.running ? "任务正在处理，请先放弃" : undefined}
+                onClick={() => {
+                  if (!window.confirm(deleteJobsConfirmMessage(1))) return;
+                  setBusyAction("delete");
+                  setErr("");
+                  void api.remove(id)
+                    .then(() => nav("/"))
+                    .catch((error: Error) => setErr(error.message))
+                    .finally(() => setBusyAction(""));
+                }}
+              >
+                {busyAction === "delete" ? "删除中..." : "删除任务"}
+              </button>
               <button type="button" className="rounded-md bg-tungsten px-4 py-2 text-sm font-medium text-ink disabled:opacity-50" disabled={primaryDisabled} onClick={() => void runPrimary()}>{busyAction === "primary" || job.running ? "处理中..." : primaryActionLabel(job)}</button>
             </div>
           </div>

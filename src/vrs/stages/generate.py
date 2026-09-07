@@ -60,12 +60,25 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _quality_params(settings: Settings, path: str, quality: str) -> dict[str, Any]:
+def _quality_params(
+    settings: Settings, path: str, quality: str, job: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    snap = ((job or {}).get("options") or {}).get("generate") or {}
+    rec = snap.get(quality) if isinstance(snap, dict) else None
+    if isinstance(rec, dict) and rec.get("workflow"):
+        return {
+            "workflow": str(rec["workflow"]),
+            "megapixels": float(rec.get("megapixels") or 0.4),
+            "steps": int(rec.get("steps") or 6),
+            "sampler": rec.get("sampler"),
+            "scheduler": rec.get("scheduler"),
+            "ref_image_size": rec.get("ref_image_size"),
+        }
     block = dict(settings.h3.get(path) or {})
     q = dict(block.get(quality) or {})
     if not q:
         raise GenerateError(f"{path} 没有 {quality} 参数")
-    workflow = str(block.get("workflow") or "")
+    workflow = str(q.get("workflow") or block.get("workflow") or "")
     if not workflow:
         raise GenerateError(f"{path} 没有 workflow")
     return {
@@ -116,8 +129,9 @@ def _prompt_text(directory: Path, item: dict[str, Any], negative: str) -> str:
 
 def _clip_timeout(settings: Settings, seconds: float, steps: int) -> float:
     configured = float(settings.default.get("generate_clip_timeout_sec") or 1800)
-    scaled = float(seconds) * float(steps) * 20.0 + 180.0
-    return max(configured, scaled)
+    # 官方非 LoRA 成片时长接近帧数平方，13s 段实测超过 7000s 仍在算。
+    scaled = float(seconds) * float(steps) * 45.0 + 600.0
+    return max(configured, scaled, 3600.0)
 
 
 def _boot_comfy(settings: Settings, directory: Path) -> None:
@@ -177,8 +191,7 @@ def next_quality(
     clips: list[dict[str, Any]],
     path: str | None = None,
 ) -> str:
-    mode = str((job.get("options") or {}).get("review_mode") or "pause_draft")
-    if mode == "pause_draft" and not quality_complete(directory, clips, "draft", path=path):
+    if not quality_complete(directory, clips, "draft", path=path):
         return "draft"
     return "final"
 
@@ -229,7 +242,7 @@ def run_generate(
         (prompts_doc.get("generate_path") or (job.get("options") or {}).get("generate_path") or "i2va_turbo")
     )
     quality = quality or next_quality(job, directory, clips, path=path)
-    params = _quality_params(settings, path, quality)
+    params = _quality_params(settings, path, quality, job)
     env = collect_env(settings, stage="generate")
     missing = [i["detail"] for i in env["install"] if i["id"] == "h3_workflows" and not i["ok"]]
     if missing:
@@ -293,7 +306,7 @@ def run_generate(
                     _log(
                         directory,
                         f"{clip_id} {quality} 第 {attempt}/{clip_tries} 次  "
-                        f"{seconds:.2f}s steps={params['steps']} mp={params['megapixels']}",
+                        f"{seconds:.2f}s {params['workflow']} steps={params['steps']} mp={params['megapixels']}",
                     )
                     prompt_id, _ = run_h3_clip(
                         settings,

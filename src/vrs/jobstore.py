@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from vrs.h3grid import merge_t2va_snapshot, normalize_generate_path
 from vrs.lock import atomic_write_json
 from vrs.pathsutil import jobs_dir
 from vrs.settings import Settings
@@ -51,17 +52,32 @@ def create_job(
     url: str | None = None,
     original_path: str | None = None,
     review_mode: str | None = None,
-    generate_path: str = "i2va_turbo",
+    generate_path: str = "t2va",
     smtp: bool | None = None,
     vl_mode: str | None = None,
     aspect_ratio: str | None = None,
     aspect_confirmed: bool = False,
+    generate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     job_id = new_job_id()
     directory = job_dir(settings, job_id)
     (directory / "source").mkdir(parents=True, exist_ok=True)
     (directory / "logs").mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    path = normalize_generate_path(generate_path)
+    options: dict[str, Any] = {
+        "review_mode": review_mode or settings.default.get("review_mode", "pause_draft"),
+        "generate_path": path,
+        "smtp": settings.smtp.get("enabled") if smtp is None else smtp,
+        "vl_mode": vl_mode or settings.default.get("vl_mode", "both"),
+        "aspect_ratio": aspect_ratio or settings.default.get("aspect_ratio", "16:9"),
+        "aspect_confirmed": bool(aspect_confirmed),
+        "mode": settings.mode(),
+        "mock_speed": settings.mock_speed(),
+        "mock_faults": deepcopy(settings.default.get("mock_faults") or {}),
+    }
+    if path == "t2va":
+        options["generate"] = merge_t2va_snapshot(settings, generate)
     job = {
         "id": job_id,
         "created_at": now,
@@ -78,17 +94,7 @@ def create_job(
             "original_path": original_path,
             "video": "source/video.mp4",
         },
-        "options": {
-            "review_mode": review_mode or settings.default.get("review_mode", "pause_draft"),
-            "generate_path": generate_path,
-            "smtp": settings.smtp.get("enabled") if smtp is None else smtp,
-            "vl_mode": vl_mode or settings.default.get("vl_mode", "both"),
-            "aspect_ratio": aspect_ratio or settings.default.get("aspect_ratio", "16:9"),
-            "aspect_confirmed": bool(aspect_confirmed),
-            "mode": settings.mode(),
-            "mock_speed": settings.mock_speed(),
-            "mock_faults": deepcopy(settings.default.get("mock_faults") or {}),
-        },
+        "options": options,
     }
     save_status(job, directory)
     return job

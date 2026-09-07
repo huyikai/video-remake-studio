@@ -200,12 +200,17 @@ def run_precheck(settings: Settings, job: dict[str, Any], directory: Path) -> di
         extra = f"，警告 {len(audit['warnings'])}" if audit["warnings"] else ""
         _log(directory, f"预检通过 {n} 段{extra}")
         mark_stage(job, directory, "precheck", "done")
-        job["state"] = "paused"
         job["stage"] = "generate"
-        job["note"] = (
-            f"预检通过 {n} 段{extra}；对照在 prompts/*.md，"
-            "审完后出试片"
-        )
+        mode = str((job.get("options") or {}).get("review_mode") or "pause_draft")
+        if mode == "full_auto":
+            job["state"] = "running"
+            job["note"] = f"预检通过 {n} 段{extra}；自动试片，VL/SDK 质检后再出成片"
+        else:
+            job["state"] = "paused"
+            job["note"] = (
+                f"预检通过 {n} 段{extra}；对照在 prompts/*.md，"
+                "审完后出试片"
+            )
         save_status(job, directory)
         return job
     except PrecheckError:

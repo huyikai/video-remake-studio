@@ -64,7 +64,7 @@ export default function StatusBar() {
   const gpu = metrics?.gpu;
   const ram = metrics?.ram;
   const h3 = metrics?.h3;
-  const mode = env?.mode || (metrics as (MetricsPayload & { mode?: string }) | null)?.mode || "mock";
+  const mode = env?.mode || metrics?.mode || "real";
   const vramHot = Boolean(metrics?.alerts.vram_hot);
   const tempHot = Boolean(metrics?.alerts.temp_hot);
   const summary = busy ? h3?.label || "任务运行中" : env?.summary || "读取环境…";

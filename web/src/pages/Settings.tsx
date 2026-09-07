@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import Dialog from "../components/Dialog";
 import { api } from "../lib/api";
 
+type QualityForm = { workflow: string; megapixels: number; steps: number };
+
 type SettingsView = {
   mode: "mock" | "real";
   mock_speed: "0.25x" | "1x" | "4x";
@@ -23,6 +25,8 @@ type SettingsView = {
   vl_mode: string;
   esrgan: boolean;
   ass_burn: boolean;
+  t2va: { draft: QualityForm; final: QualityForm };
+  t2va_workflows: { id: string; label: string }[];
 };
 
 type Props = { onClose: () => void };
@@ -77,6 +81,7 @@ export default function SettingsPage({ onClose }: Props) {
         vl_mode: form.vl_mode,
         esrgan: form.esrgan,
         ass_burn: form.ass_burn,
+        t2va: form.t2va,
       });
       setForm(next as SettingsView);
       setFaultText(JSON.stringify((next as SettingsView).mock_faults || {}, null, 2));
@@ -152,6 +157,51 @@ export default function SettingsPage({ onClose }: Props) {
             <input type="checkbox" checked={form.ass_burn} onChange={(e) => set("ass_burn", e.target.checked)} />
             烧 ASS
           </label>
+            {form.t2va ? (
+          <section className="rounded-lg border border-line p-4">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">T2VA 默认</p>
+            <h3 className="mt-1 font-semibold">试片 / 成片</h3>
+            <p className="mt-1 text-xs text-muted">只作用于之后新建的 T2VA 任务。T2VA Turbo、I2VA、Ref2VA 仍走 yaml。创建时写入任务快照。</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {(["draft", "final"] as const).map((quality) => (
+                <div key={quality} className="space-y-2">
+                  <p className="text-sm text-text">{quality === "draft" ? "试片" : "成片"}</p>
+                  <label className="block text-muted">
+                    工作流
+                    <select
+                      className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+                      value={form.t2va[quality].workflow}
+                      onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], workflow: e.target.value } })}
+                    >
+                      {(form.t2va_workflows || []).map((item) => (
+                        <option key={item.id} value={item.id}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-muted">
+                    MP
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="mt-1 w-full rounded border border-line bg-ink p-2 text-text"
+                      value={form.t2va[quality].megapixels}
+                      onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], megapixels: Number(e.target.value) } })}
+                    />
+                  </label>
+                  <label className="block text-muted">
+                    步数
+                    <input
+                      type="number"
+                      className="mt-1 w-full rounded border border-line bg-ink p-2 text-text"
+                      value={form.t2va[quality].steps}
+                      onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], steps: Number(e.target.value) } })}
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+          </section>
+            ) : null}
           {msg ? <p className="text-ok">{msg}</p> : null}
           {err ? <p className="text-bad">{err}</p> : null}
           <div className="flex justify-end gap-2 pt-2">

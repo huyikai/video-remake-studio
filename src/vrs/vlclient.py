@@ -341,24 +341,46 @@ def _tf_generate(
     max_new_tokens: int | None = None,
 ) -> str:
     model, processor = _load_tf(settings)
-    processor_kwargs: dict[str, Any] = {
-        "videos_kwargs": {"cap_pixels_per_frame": True},
-    }
     if num_frames:
-        processor_kwargs["num_frames"] = int(num_frames)
-        processor_kwargs["do_sample_frames"] = True
+        kw_tries: list[dict[str, Any] | None] = [
+            {
+                "num_frames": int(num_frames),
+                "do_sample_frames": True,
+                "videos_kwargs": {"cap_pixels_per_frame": True},
+            },
+            {"num_frames": int(num_frames), "do_sample_frames": True},
+            None,
+        ]
     else:
-        processor_kwargs["do_sample_frames"] = False
+        kw_tries = [None]
     tokens = int(max_new_tokens or settings.default.get("vl_max_new_tokens") or 900)
+    template_error: Exception | None = None
+    inputs = None
+    for pkw in kw_tries:
+        apply_kw: dict[str, Any] = {
+            "tokenize": True,
+            "add_generation_prompt": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+        }
+        if pkw:
+            apply_kw["processor_kwargs"] = pkw
+        try:
+            inputs = processor.apply_chat_template(messages, **apply_kw)
+            break
+        except TypeError as exc:
+            template_error = exc
+            inputs = None
+        except Exception as exc:  # noqa: BLE001
+            text = str(exc).lower()
+            if "unexpected keyword" in text or "processor_kwargs" in text:
+                template_error = exc
+                inputs = None
+                continue
+            raise VLError(str(exc)) from exc
+    if inputs is None:
+        raise VLError(str(template_error) if template_error else "VL 无法编码输入")
     try:
-        inputs = processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-            processor_kwargs=processor_kwargs,
-        )
         inputs = inputs.to(_tf_device(model))
         generated = model.generate(
             **inputs,
@@ -391,14 +413,36 @@ def analyze_image(
     *,
     max_new_tokens: int | None = None,
 ) -> str:
-    content = [
-        {"type": "image", "image": _local_path(image)},
-        {"type": "text", "text": prompt},
-    ]
+    return analyze_images(settings, [image], prompt, max_new_tokens=max_new_tokens)
+
+
+def analyze_images(
+    settings: Settings,
+    images: list[Path],
+    prompt: str,
+    *,
+    max_new_tokens: int | None = None,
+    max_edge: int | None = None,
+) -> str:
+    """多图问答。试片对照用：源片帧和草稿帧按顺序喂进去。"""
+    paths = [path for path in images if path.is_file()]
+    if not paths:
+        raise VLError("没有可读的图片")
+    tokens = int(max_new_tokens or settings.default.get("vl_beats_max_tokens") or 1800)
+    edge = int(max_edge if max_edge is not None else settings.default.get("vl_look_max_edge") or 768)
+    cfg = resolve_vl(settings)
+    if str(cfg.get("kind") or "transformers") == "openai_compat":
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for frame in paths:
+            content.append({"type": "image_url", "image_url": {"url": _image_data_url(frame)}})
+        return _chat(settings, content, timeout=float(settings.default.get("vl_timeout") or 180))
+    prepared = _prepared_frame_paths(settings, paths, tag="compare", max_edge=edge)
+    content = [{"type": "image", "image": image} for image in prepared]
+    content.append({"type": "text", "text": prompt})
     return _tf_generate(
         settings,
         [{"role": "user", "content": content}],
-        max_new_tokens=int(max_new_tokens or settings.default.get("vl_beats_max_tokens") or 1800),
+        max_new_tokens=tokens,
     )
 
 
@@ -460,7 +504,7 @@ def _prepared_frame_paths(
     if max_edge is None:
         max_edge = int(settings.default.get("vl_image_max_edge") or 640)
     out: list[str] = []
-    for index, path in enumerate(frames[:4]):
+    for index, path in enumerate(frames):
         if max_edge > 0:
             dest = path.parent / "_vl" / f"{tag}_{index:02d}.jpg"
             out.append(_shrink_vl_image(path, dest, max_edge))

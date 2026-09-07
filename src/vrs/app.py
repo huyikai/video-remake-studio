@@ -49,11 +49,12 @@ class JobCreate(BaseModel):
     url: str | None = None
     file_path: str | None = None
     review_mode: str | None = None
-    generate_path: Literal["i2va_turbo", "t2va_turbo", "ref2va"] = "i2va_turbo"
+    generate_path: Literal["t2va", "t2va_turbo", "i2va_turbo", "ref2va"] = "t2va"
     smtp: bool | None = None
     vl_mode: str | None = None
     aspect_ratio: str | None = None
     aspect_confirmed: bool = False
+    generate: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def one_source(self) -> JobCreate:
@@ -100,6 +101,7 @@ class SettingsPatch(BaseModel):
     ass_burn: bool | None = None
     smtp_enabled: bool | None = None
     smtp_to: list[str] | str | None = None
+    t2va: dict[str, Any] | None = None
 
 
 class DraftBody(BaseModel):
@@ -258,6 +260,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     vl_mode=body.vl_mode,
                     aspect_ratio=body.aspect_ratio,
                     aspect_confirmed=body.aspect_confirmed,
+                    generate=body.generate,
                 )
             else:
                 job = create_and_download(
@@ -271,8 +274,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     aspect_ratio=body.aspect_ratio,
                     aspect_confirmed=body.aspect_confirmed,
                     background=True,
+                    generate=body.generate,
                 )
         except IngestGateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except BusyError as exc:
             raise _http_busy(exc) from exc

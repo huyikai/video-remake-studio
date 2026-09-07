@@ -116,14 +116,35 @@ def _continue_generate(settings: Settings, job: dict, directory: Path) -> dict:
     raise_if_cancelled(directory)
     if job.get("stages", {}).get("precheck", {}).get("status") != "done":
         return job
-    gen = job.get("stages", {}).get("generate", {}).get("status")
-    if gen != "done":
-        return run_generate(settings, job, directory)
     if job.get("stages", {}).get("finish", {}).get("status") == "done":
         return job
     clips = _clips(directory)
     mode = str((job.get("options") or {}).get("review_mode") or "pause_draft")
-    if mode == "pause_draft" and clips and not quality_complete(directory, clips, "final"):
+    path = job_generate_path(directory, job)
+    made_draft_now = False
+    if clips and not quality_complete(directory, clips, "draft", path=path):
+        job = run_generate(settings, job, directory, quality="draft")
+        if job.get("stages", {}).get("generate", {}).get("status") != "done":
+            return job
+        made_draft_now = True
+    if mode == "full_auto":
+        from vrs.stages.draftreview import run_auto_review
+
+        job = run_auto_review(settings, job, directory)
+        if job.get("state") in {"failed", "cancelled"}:
+            return job
+        gen_status = str((job.get("stages") or {}).get("generate", {}).get("status") or "")
+        if gen_status == "waiting":
+            return job
+        if clips and not quality_complete(directory, clips, "final", path=path):
+            job = run_generate(settings, job, directory, quality="final")
+            if job.get("stages", {}).get("generate", {}).get("status") != "done":
+                return job
+        raise_if_cancelled(directory)
+        return run_finish(settings, job, directory)
+    if made_draft_now:
+        return job
+    if clips and not quality_complete(directory, clips, "final", path=path):
         job = run_generate(settings, job, directory, quality="final")
         if job.get("stages", {}).get("generate", {}).get("status") != "done":
             return job
@@ -176,7 +197,14 @@ def _run_created(settings: Settings, job_id: str) -> dict:
                 return job
             raise_if_cancelled(directory)
             job = run_pagemeta(settings, job, directory)
-            return _continue_understand(settings, job, directory)
+            job = _continue_understand(settings, job, directory)
+            mode = str((job.get("options") or {}).get("review_mode") or "pause_draft")
+            if (
+                mode == "full_auto"
+                and job.get("stages", {}).get("precheck", {}).get("status") == "done"
+            ):
+                return _continue_generate(settings, job, directory)
+            return job
     except JobCancelled:
         return mark_job_cancelled(settings, job_id)
     except BusyError:
@@ -199,12 +227,13 @@ def create_and_download(
     url: str | None = None,
     file_path: str | None = None,
     review_mode: str | None = None,
-    generate_path: str = "i2va_turbo",
+    generate_path: str = "t2va",
     smtp: bool | None = None,
     vl_mode: str | None = None,
     aspect_ratio: str | None = None,
     aspect_confirmed: bool = False,
     background: bool = False,
+    generate: dict | None = None,
 ) -> dict:
     if bool(url) == bool(file_path):
         raise IngestGateError("必须只提供 url 或本地绝对路径其中一个")
@@ -232,6 +261,7 @@ def create_and_download(
         vl_mode=vl_mode,
         aspect_ratio=aspect_ratio,
         aspect_confirmed=aspect_confirmed,
+        generate=generate,
     )
     if settings.mode() == "mock":
         from vrs.mock import start_created

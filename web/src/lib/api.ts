@@ -36,6 +36,7 @@ export type MetricsPayload = {
     comfy_reachable: boolean;
   };
   alerts: { vram_hot: boolean; temp_hot: boolean };
+  mode?: "mock" | "real";
 };
 
 export type JobSummary = {
