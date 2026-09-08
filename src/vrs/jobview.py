@@ -11,6 +11,7 @@ from vrs.aspect import aspect_label
 from vrs.h3grid import normalize_generate_path
 from vrs.jobstore import get_job, iter_jobs, job_dir
 from vrs.lock import JobLock
+from vrs.passb import assemble_zh
 from vrs.promptcheck import iter_clip_speech
 from vrs.settings import Settings
 from vrs.stages.generate import clip_output_dir, job_generate_path
@@ -253,9 +254,13 @@ def clip_editor_payload(directory: Path, clip_id: str) -> dict[str, Any]:
     txt_path = directory / "prompts" / f"{clip_id}.txt"
     md_path = directory / "prompts" / f"{clip_id}.md"
     prompt_json = _load(json_path) if json_path.is_file() else None
+    script_zh = ""
+    if isinstance(prompt_json, dict):
+        script_zh = assemble_zh(prompt_json, clip)
     return {
         "clip": clip,
         "speech": speech,
+        "script_zh": script_zh,
         "prompt_json": prompt_json,
         "prompt_txt": txt_path.read_text(encoding="utf-8") if txt_path.is_file() else "",
         "review_md": md_path.read_text(encoding="utf-8") if md_path.is_file() else "",

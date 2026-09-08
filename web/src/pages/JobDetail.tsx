@@ -16,8 +16,8 @@ const STAGE_LABEL: Record<string, string> = {
   understand: "视频理解",
   script: "脚本生成",
   precheck: "预检",
-  generate: "视频生成",
-  finish: "交付成片",
+  generate: "视频生成（试片）",
+  finish: "视频生成（成片）",
 };
 
 type StageRecord = { status: string; error?: string | null };
@@ -58,6 +58,14 @@ type PreviewKind = "source" | "draft" | "final";
 type BatchKind = "scripts" | "ai" | "videos" | null;
 type ClipBiz = "ready" | "pending" | "generating" | "failed";
 type DetailKind = "understand" | "precheck" | "progress" | null;
+type RewPreview = {
+  clip_id: string;
+  script_zh: string;
+  prompt_txt: string;
+  review_md: string;
+  prompt_json: Record<string, unknown>;
+  h3_seconds: number;
+};
 
 function stageTone(status?: string) {
   const key = (status || "").toLowerCase();
@@ -138,14 +146,16 @@ export default function JobDetail() {
   const [picked, setPicked] = useState<string[]>([]);
   const [showOthers, setShowOthers] = useState(false);
   const [preview, setPreview] = useState<PreviewKind>("source");
+  const [scriptZh, setScriptZh] = useState("");
+  const [savedZh, setSavedZh] = useState("");
   const [txt, setTxt] = useState("");
-  const [md, setMd] = useState("");
   const [seconds, setSeconds] = useState("");
   const [speech, setSpeech] = useState<SpeechLine[]>([]);
-  const [savedTxt, setSavedTxt] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiScope, setAiScope] = useState<string[]>([]);
+  const [rewPreview, setRewPreview] = useState<RewPreview | null>(null);
+  const [rewBusy, setRewBusy] = useState(false);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [connection, setConnection] = useState<"connecting" | "live" | "offline">("connecting");
@@ -155,6 +165,9 @@ export default function JobDetail() {
   const [detail, setDetail] = useState<DetailKind>(null);
   const [understand, setUnderstand] = useState<{ shots: number; events: number; speech: number; windows: number; duration?: number; raw: string } | null>(null);
   const batchRef = useRef<HTMLDivElement>(null);
+  const clipIdRef = useRef<string | null>(null);
+  const rewReqRef = useRef(0);
+  clipIdRef.current = clipId;
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -196,14 +209,27 @@ export default function JobDetail() {
 
   useEffect(() => {
     if (!id || !clipId) return;
+    let stale = false;
+    setScriptZh("");
+    setSavedZh("");
+    setTxt("");
+    setSeconds("");
+    setSpeech([]);
+    setRewPreview(null);
     api.clip(id, clipId).then((raw) => {
-      const data = raw as { prompt_txt: string; review_md: string; clip: { h3_seconds: number }; speech?: SpeechLine[] };
+      if (stale) return;
+      const data = raw as { script_zh: string; prompt_txt: string; review_md: string; clip: { h3_seconds: number }; speech?: SpeechLine[] };
+      setScriptZh(data.script_zh || "");
+      setSavedZh(data.script_zh || "");
       setTxt(data.prompt_txt || "");
-      setSavedTxt(data.prompt_txt || "");
-      setMd(data.review_md || "");
       setSeconds(String(data.clip?.h3_seconds ?? ""));
       setSpeech(data.speech || []);
-    }).catch((error: Error) => setErr(error.message));
+    }).catch((error: Error) => {
+      if (!stale) setErr(error.message);
+    });
+    return () => {
+      stale = true;
+    };
   }, [id, clipId]);
 
   useEffect(() => {
@@ -255,7 +281,7 @@ export default function JobDetail() {
   const current = clips.find((clip) => clip.id === clipId) || null;
   const progressStage = job ? currentProgressStage(job) : "download";
   const shownStage = viewStage ?? progressStage;
-  const unsaved = Boolean(clipId) && txt !== savedTxt;
+  const unsaved = Boolean(clipId) && scriptZh !== savedZh;
   const sourceReady = Boolean(job?.media?.source);
   const pendingClips = clips.filter((clip) => clipBiz(clip, dirty) === "pending");
   const failedClips = clips.filter((clip) => clipBiz(clip, dirty) === "failed");
@@ -304,8 +330,14 @@ export default function JobDetail() {
   function selectClip(nextId: string) {
     const clip = clips.find((item) => item.id === nextId);
     if (!clip) return;
+    const selectingFromScript = shownStage === "script";
     setClipId(nextId);
     setNavOpen(false);
+    if (selectingFromScript) {
+      setViewStage("script");
+      setEditing(true);
+      return;
+    }
     const status = clipBiz(clip, dirty);
     if (status === "pending" || status === "failed") {
       setViewStage("script");
@@ -322,17 +354,73 @@ export default function JobDetail() {
     setEditing(true);
   }
 
-  async function save() {
-    if (!clipId) return;
+  async function previewRewrite(payload: Record<string, unknown>) {
+    const targetClip = clipId;
+    if (!targetClip) return;
+    const h3s = Number(seconds);
+    if (!Number.isFinite(h3s) || h3s <= 0) {
+      setErr("H3 时长必须是大于 0 的数字");
+      return;
+    }
+    const req = ++rewReqRef.current;
+    setRewBusy(true);
     setErr("");
     setMsg("");
     try {
-      await api.saveClip(id, clipId, { prompt_txt: txt, review_md: md, h3_seconds: Number(seconds) });
-      setSavedTxt(txt);
-      setMsg("脚本已保存，该片段待生成");
+      const data = (await api.rewriteClip(id, targetClip, { ...payload, h3_seconds: h3s })) as RewPreview;
+      if (req !== rewReqRef.current || clipIdRef.current !== targetClip) return;
+      setRewPreview({ ...data, clip_id: data.clip_id || targetClip });
+    } catch (error) {
+      if (req !== rewReqRef.current || clipIdRef.current !== targetClip) return;
+      setErr((error as Error).message);
+      setRewPreview(null);
+    } finally {
+      if (req === rewReqRef.current) setRewBusy(false);
+    }
+  }
+
+  async function confirmPreview() {
+    const targetClip = clipId;
+    if (!targetClip || !rewPreview) return;
+    if (rewPreview.clip_id && rewPreview.clip_id !== targetClip) {
+      setErr("预览已过期，请重新生成英文脚本");
+      setRewPreview(null);
+      return;
+    }
+    const preview = rewPreview;
+    setErr("");
+    setMsg("");
+    try {
+      const result = (await api.saveClip(id, targetClip, { prompt_json: preview.prompt_json, h3_seconds: preview.h3_seconds })) as {
+        ok?: boolean;
+        error?: string;
+        precheck?: { ok?: boolean; errors?: string[] };
+      };
+      if (result.ok === false) {
+        if (clipIdRef.current === targetClip) {
+          setErr(result.error || "保存失败");
+          if (result.precheck?.errors?.length) setDetail("precheck");
+        }
+        return;
+      }
+      if (clipIdRef.current !== targetClip) {
+        await refresh();
+        return;
+      }
+      if (result.precheck && !result.precheck.ok) {
+        setDetail("precheck");
+        setMsg("脚本已更新，但预检未通过，请查看预检报告。");
+      } else {
+        setMsg("已保存新的英文脚本，该片段待重新出试片");
+      }
+      setScriptZh(preview.script_zh);
+      setSavedZh(preview.script_zh);
+      setTxt(preview.prompt_txt);
+      setSeconds(String(preview.h3_seconds));
+      setRewPreview(null);
       await refresh();
     } catch (error) {
-      setErr((error as Error).message);
+      if (clipIdRef.current === targetClip) setErr((error as Error).message);
     }
   }
 
@@ -508,17 +596,20 @@ export default function JobDetail() {
               <ScriptWorkspace
                 current={current}
                 editing={editing}
+                scriptZh={scriptZh}
                 txt={txt}
-                md={md}
                 seconds={seconds}
                 speech={speech}
                 mediaSrc={current?.draft.file ? fileUrl(job.id, current.draft.file) : sourceSrc}
-                setTxt={setTxt}
-                setMd={setMd}
+                setScriptZh={setScriptZh}
                 setSeconds={setSeconds}
                 onEdit={editScript}
-                onAi={() => { setAiScope(current ? [current.id] : []); setAiOpen(true); }}
-                onSave={() => void save()}
+                onAi={() => { setAiScope(current ? [current.id] : []); setAiPrompt(""); setAiOpen(true); }}
+                onPreview={(payload) => void previewRewrite(payload)}
+                rewPreview={rewPreview}
+                rewBusy={rewBusy}
+                onConfirm={() => void confirmPreview()}
+                onDiscardPreview={() => setRewPreview(null)}
                 busy={Boolean(busyAction)}
               />
             ) : null}
@@ -630,12 +721,19 @@ export default function JobDetail() {
 
       {aiOpen ? (
         <Dialog title={aiScope.length > 1 ? `AI 修改脚本 · ${aiScope.length} 个片段` : `AI 修改脚本${aiScope[0] ? ` · ${aiScope[0]}` : ""}`} onClose={() => setAiOpen(false)}>
-          <p className="mb-3 text-sm text-muted">描述你希望怎么改。确认后先预览，不会立刻覆盖原脚本，也不会自动生成视频。</p>
+          <p className="mb-3 text-sm text-muted">描述你希望怎么改。确认后先生成预览，核对无误再保存；不会立刻覆盖原脚本，也不会自动生成视频。</p>
           <textarea className="h-32 w-full rounded-md border border-line bg-panel p-3 text-sm" value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="例如：加快镜头节奏，保留人物外观和原对白。" />
-          <p className="mt-3 text-xs text-muted">当前版本请先在脚本工作区手动修改并保存。LLM 改写接入后，会在这里显示修改前后对比。</p>
+          {aiScope.length > 1 ? <p className="mt-3 text-xs text-warn">批量 AI 修改尚未接入，请先对单个片段操作。</p> : null}
           <div className="mt-5 flex justify-end gap-2">
             <button type="button" className="rounded-md px-3 py-2 text-sm text-muted" onClick={() => setAiOpen(false)}>取消</button>
-            <button type="button" className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink" onClick={() => { setAiOpen(false); setMsg("已记录修改需求，请先手动保存脚本。"); }}>确认</button>
+            <button
+              type="button"
+              className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:opacity-50"
+              disabled={!aiPrompt.trim() || aiScope.length > 1 || rewBusy}
+              onClick={() => { setAiOpen(false); if (clipId) void previewRewrite({ requirement: aiPrompt }); }}
+            >
+              {rewBusy ? "生成中..." : "生成预览"}
+            </button>
           </div>
         </Dialog>
       ) : null}
@@ -782,6 +880,11 @@ function GenerateOverview({ job, clips, dirty }: { job: JobDetailData; clips: Cl
   const pending = clips.filter((clip) => clipBiz(clip, dirty) === "pending").length;
   const ready = clips.filter((clip) => clipBiz(clip, dirty) === "ready").length;
   const failed = clips.filter((clip) => clipBiz(clip, dirty) === "failed").length;
+  const draftDone = clips.length > 0 && clips.every((clip) => clip.draft.status === "done");
+  const finalDone = clips.length > 0 && clips.every((clip) => clip.final.status === "done");
+  const confirmHint = draftDone && !finalDone && !dirty.length
+    ? "试片已全部生成，请在左侧逐个确认效果；确认后点「生成成片」进入最终交付。"
+    : null;
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
       <h3 className="font-medium">生成概览</h3>
@@ -790,6 +893,7 @@ function GenerateOverview({ job, clips, dirty }: { job: JobDetailData; clips: Cl
         <Metric label="待生成" value={String(pending)} />
         <Metric label="失败" value={String(failed)} />
       </div>
+      {confirmHint ? <p className="mt-4 rounded-md border border-tungsten/40 bg-tungsten/10 p-3 text-sm text-tungsten">{confirmHint}</p> : null}
       <p className="mt-4 text-sm text-muted">需要批量时，用右下角「批量操作」。左侧点击片段后，这里会进入该片段的视频监视区。</p>
       <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
         {clips.map((clip) => {
@@ -888,21 +992,24 @@ function useWideLayout() {
 }
 
 function ScriptWorkspace({
-  current, editing, txt, md, seconds, speech, mediaSrc, setTxt, setMd, setSeconds, onEdit, onAi, onSave, busy,
+  current, editing, scriptZh, txt, seconds, speech, mediaSrc, setScriptZh, setSeconds, onEdit, onAi, onPreview, rewPreview, rewBusy, onConfirm, onDiscardPreview, busy,
 }: {
   current: ClipRow | null;
   editing: boolean;
+  scriptZh: string;
   txt: string;
-  md: string;
   seconds: string;
   speech: SpeechLine[];
   mediaSrc?: string;
-  setTxt: (value: string) => void;
-  setMd: (value: string) => void;
+  setScriptZh: (value: string) => void;
   setSeconds: (value: string) => void;
   onEdit: () => void;
   onAi: () => void;
-  onSave: () => void;
+  onPreview: (payload: Record<string, unknown>) => void;
+  rewPreview: RewPreview | null;
+  rewBusy: boolean;
+  onConfirm: () => void;
+  onDiscardPreview: () => void;
   busy: boolean;
 }) {
   const wide = useWideLayout();
@@ -930,7 +1037,7 @@ function ScriptWorkspace({
         </div>
         <div className="flex gap-2">
           <button type="button" className="rounded-md border border-line px-3 py-1.5 text-sm text-muted" onClick={onAi}>AI 修改脚本</button>
-          <button type="button" className="rounded-md bg-tungsten px-3 py-1.5 text-sm text-ink disabled:opacity-50" disabled={busy} onClick={onSave}>保存脚本</button>
+          <button type="button" className="rounded-md bg-tungsten px-3 py-1.5 text-sm text-ink disabled:opacity-50" disabled={busy || rewBusy} onClick={() => onPreview({ script_zh: scriptZh })}>生成英文脚本</button>
         </div>
       </div>
       <ResizablePanelGroup
@@ -949,10 +1056,16 @@ function ScriptWorkspace({
         <ResizableHandle withHandle />
         <ResizablePanel id="script" defaultSize={wide ? "42%" : "54%"} minSize="28%" className="min-h-0">
           <div className="flex h-full min-h-0 flex-col">
-            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_minmax(0,0.75fr)] gap-3 overflow-hidden p-4">
+            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_minmax(0,0.55fr)] gap-3 overflow-hidden p-4">
               <label className="block text-xs text-muted">H3 时长（秒）<input className="mt-1 w-full rounded-md border border-line bg-panel p-2 text-sm text-text" value={seconds} onChange={(event) => setSeconds(event.target.value)} /></label>
-              <label className="flex min-h-0 flex-col text-xs text-muted">英文提示词<textarea className="mt-1 min-h-0 flex-1 resize-none rounded-md border border-line bg-panel p-3 font-mono text-xs leading-5 text-text" value={txt} onChange={(event) => setTxt(event.target.value)} /></label>
-              <label className="flex min-h-0 flex-col text-xs text-muted">中文对照<textarea className="mt-1 min-h-0 flex-1 resize-none rounded-md border border-line bg-panel p-3 font-mono text-xs leading-5 text-text" value={md} onChange={(event) => setMd(event.target.value)} /></label>
+              <label className="flex min-h-0 flex-col text-xs text-muted">中文脚本（唯一可编辑）
+                <textarea className="mt-1 min-h-0 flex-1 resize-none rounded-md border border-line bg-panel p-3 text-sm leading-5 text-text" value={scriptZh} onChange={(event) => setScriptZh(event.target.value)} />
+              </label>
+              <div className="flex min-h-0 flex-col text-xs text-muted">喂给 H3 的英文（由程序生成，只读）
+                <div className="mt-1 min-h-0 flex-1 overflow-auto rounded-md border border-line bg-panel/50 p-3 font-mono text-xs leading-5 text-muted">
+                  <pre className="whitespace-pre-wrap">{rewPreview ? rewPreview.prompt_txt : txt}</pre>
+                </div>
+              </div>
             </div>
             <div className="max-h-20 shrink-0 overflow-y-auto border-t border-line px-4 py-2 text-xs text-muted">
               {speech.length ? speech.map((line) => <p key={`${line.t0}-${line.text}`}>{fmtTime(line.t0)} {line.text}</p>) : "本段没有对白"}
@@ -960,6 +1073,20 @@ function ScriptWorkspace({
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
+
+      {rewPreview ? (
+        <div className="shrink-0 border-t border-warn/40 bg-warn/10 px-4 py-3">
+          <p className="text-sm font-medium text-warn">已生成新的英文脚本，请预览中文对照后确认</p>
+          <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-line bg-surface p-3">
+            <p className="mb-2 text-xs font-medium text-muted">中文脚本（确认后写入编辑区）</p>
+            <pre className="whitespace-pre-wrap text-xs leading-5 text-text">{rewPreview.script_zh}</pre>
+          </div>
+          <div className="mt-3 flex justify-end gap-2">
+            <button type="button" className="rounded-md px-3 py-2 text-sm text-muted" onClick={onDiscardPreview}>放弃</button>
+            <button type="button" className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:opacity-50" disabled={busy || rewBusy} onClick={onConfirm}>确认并保存</button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

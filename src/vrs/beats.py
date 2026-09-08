@@ -10,7 +10,7 @@ from vrs.media import extract_frame_at
 from vrs.probe import which_ffmpeg
 from vrs.settings import Settings
 from vrs.textjson import parse_json_payload
-from vrs.vlclient import VLError, analyze_image, unload_vl
+from vrs.vlclient import CURSOR_SDK_KIND, VLError, analyze_image, analyze_images, resolve_vl, unload_vl
 
 WINDOW = 3.0
 HOP = 2.5
@@ -19,6 +19,8 @@ CELLS = 12
 CELL_H = 360
 CUT_NEAR = 0.25
 SCENE = 0.25
+# 与 sdkclient.MAX_IMAGES 对齐；多传会被 SDK 静默截掉，提示词时间轴会对不上
+SDK_FRAME_LIMIT = 8
 
 BEAT_PROMPT = """\
 你在替一条要复刻的原片做读图。只描述这一窗里实际看见的。
@@ -39,6 +41,40 @@ BEAT_PROMPT = """\
 - action: 按看见→靠近→接触→结果写，不要收成情节摘要，不要编没看见的
 - unsure: 字符串数组，没有则 []
 """
+
+BEAT_FRAMES_PROMPT = """\
+你在替一条要复刻的原片做读图。只描述这些静帧里实际看见的。
+不要写剧本，不要判定谁在说话，不要写「说话人」。
+画面上谁嘴在动，不等于字幕上那句就是他说的。
+
+下面 {n} 张图按时间顺序，对应同一窗 {start:.2f}s–{end:.2f}s。不是 {n} 个镜头，也不是 {n} 个人。
+各张时间（秒）：{cell_list}
+
+只输出一个 JSON 对象（不要数组，不要 markdown，不要其它段落）。字段：
+- cells: 数组，每项 {{"t": 秒（纯数字，不要汉字）, "see": "人/衣/站位/手/脸/道具，一句，40–80 字"}}
+  同一句话不要重复写。人多写清人数和左右站位，不要用一句情节摘要代替看见的东西。
+- adults: 整数
+- children: 整数
+- mouth: 数组，每项 {{"who": "左|中|右或衣着", "state": "open|closed|offscreen", "cells": "起止格秒数"}}
+- has_text: 布尔，画面上是否有字（不要抄写原文）
+- action: 按看见→靠近→接触→结果写，不要收成情节摘要，不要编没看见的
+- unsure: 字符串数组，没有则 []
+"""
+
+
+def window_failed(win: dict[str, Any] | None) -> bool:
+    if not isinstance(win, dict):
+        return True
+    return bool(win.get("error") or not str(win.get("raw") or "").strip())
+
+
+def _spread_times(times: list[float], limit: int) -> list[float]:
+    if len(times) <= limit:
+        return times
+    if limit <= 1:
+        return times[:1]
+    step = (len(times) - 1) / (limit - 1)
+    return [times[int(round(i * step))] for i in range(limit)]
 
 
 def _cs(t: float) -> str:
@@ -365,7 +401,7 @@ def run_beat_table(
         key = (_round(start), _round(end))
         found = by_span.get(key)
         times = cell_times(start, end, step=step, cells=cells_n)
-        if found and not found.get("error"):
+        if found and not window_failed(found):
             rows.append(found)
             prev = found
             continue
@@ -385,42 +421,71 @@ def run_beat_table(
                 prev = found
                 continue
         cell_paths = [frames[t] for t in times if t in frames]
-        dest = directory / "beats" / "strips" / f"w{_cs(start)}-{_cs(end)}.jpg"
-        strip = dest if dest.is_file() and dest.stat().st_size > 1000 else make_strip(cell_paths, dest, height=height)
+        sdk = str(resolve_vl(settings).get("kind") or "") == CURSOR_SDK_KIND
         win: dict[str, Any] = {
             "start": start,
             "end": end,
-            "strip": str(strip.relative_to(directory)).replace("\\", "/") if strip else "",
+            "strip": "",
             "cell_times": times,
         }
-        if strip is None:
-            win["error"] = "横条失败"
+        if sdk:
+            picked_times = _spread_times(times, SDK_FRAME_LIMIT)
+            picked_paths = [frames[t] for t in picked_times if t in frames]
+            if not picked_paths:
+                win["error"] = "没有可用帧"
+            else:
+                prompt = BEAT_FRAMES_PROMPT.format(
+                    n=len(picked_paths),
+                    start=start,
+                    end=end,
+                    cell_list=" ".join(f"{t:.2f}" for t in picked_times),
+                )
+                for _attempt in range(2):
+                    try:
+                        raw = analyze_images(settings, picked_paths, prompt)
+                        win["raw"] = raw
+                        parsed = _parse_beat(raw, picked_times)
+                        parsed.pop("raw", None)
+                        win.update(parsed)
+                        win.pop("error", None)
+                        break
+                    except VLError as exc:
+                        win["error"] = str(exc)[:300]
+                        break
+                    except (ValueError, TypeError) as exc:
+                        win["error"] = str(exc)[:300]
         else:
-            prompt = BEAT_PROMPT.format(
-                n=len(times),
-                step=step,
-                start=start,
-                end=end,
-                cell_list=" ".join(f"{t:.2f}" for t in times),
-            )
-            base = int(settings.default.get("vl_beats_max_tokens") or 1800)
-            for tokens in (base, base * 2):
-                try:
-                    raw = analyze_image(settings, strip, prompt, max_new_tokens=tokens)
-                    win["raw"] = raw
-                    parsed = _parse_beat(raw, times)
-                    parsed.pop("raw", None)
-                    win.update(parsed)
-                    win.pop("error", None)
-                    break
-                except VLError as exc:
-                    win["error"] = str(exc)[:300]
-                    if "out of memory" in str(exc).lower() or "oom" in str(exc).lower():
-                        unload_vl()
-                    break
-                except (ValueError, TypeError) as exc:
-                    # 多半是输出被 token 上限截断，加大额度再问一次
-                    win["error"] = str(exc)[:300]
+            dest = directory / "beats" / "strips" / f"w{_cs(start)}-{_cs(end)}.jpg"
+            strip = dest if dest.is_file() and dest.stat().st_size > 1000 else make_strip(cell_paths, dest, height=height)
+            win["strip"] = str(strip.relative_to(directory)).replace("\\", "/") if strip else ""
+            if strip is None:
+                win["error"] = "横条失败"
+            else:
+                prompt = BEAT_PROMPT.format(
+                    n=len(times),
+                    step=step,
+                    start=start,
+                    end=end,
+                    cell_list=" ".join(f"{t:.2f}" for t in times),
+                )
+                base = int(settings.default.get("vl_beats_max_tokens") or 1800)
+                for tokens in (base, base * 2):
+                    try:
+                        raw = analyze_image(settings, strip, prompt, max_new_tokens=tokens)
+                        win["raw"] = raw
+                        parsed = _parse_beat(raw, times)
+                        parsed.pop("raw", None)
+                        win.update(parsed)
+                        win.pop("error", None)
+                        break
+                    except VLError as exc:
+                        win["error"] = str(exc)[:300]
+                        if "out of memory" in str(exc).lower() or "oom" in str(exc).lower():
+                            unload_vl()
+                        break
+                    except (ValueError, TypeError) as exc:
+                        # 多半是输出被 token 上限截断，加大额度再问一次
+                        win["error"] = str(exc)[:300]
         win["must_open"] = flag_window(win, prev=prev, cuts=cuts, dialogue=dialogue)
         rows.append(win)
         prev = win

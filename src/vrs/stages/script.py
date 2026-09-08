@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from vrs.beats import window_failed
 from vrs.h3grid import PATH_KEYFRAMES, PATH_LOCK_ACROSS, normalize_generate_path, t_bounds
 from vrs.jobstore import mark_stage, only_clips, save_status
 from vrs.lock import atomic_write_json
@@ -84,6 +85,9 @@ def run_script(settings: Settings, job: dict[str, Any], directory: Path) -> dict
     beats = _load_json(directory / "beats.json")
     if not (beats or {}).get("windows"):
         raise ScriptError("缺少 beats.json，先跑完拍表")
+    failures = [w for w in (beats or {}).get("windows") or [] if window_failed(w)]
+    if failures:
+        raise ScriptError(f"视觉拍表未完成：{len(failures)}/{len((beats or {}).get('windows') or [])} 个窗口失败，禁止生成脚本")
     dialogue = _load_json(directory / "dialogue.json") or {}
     cuts = [float(c) for c in ((_load_json(directory / "scene_cuts.json") or {}).get("cuts") or [])]
     path = normalize_generate_path((job.get("options") or {}).get("generate_path") or "i2va_turbo")

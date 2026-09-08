@@ -134,6 +134,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(parse),
+  rewriteClip: (id: string, clipId: string, body: Record<string, unknown>) =>
+    fetch(`/api/jobs/${id}/clips/${clipId}/rewrite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(parse),
   saveScript: (id: string, body: Record<string, unknown>) =>
     fetch(`/api/jobs/${id}/script`, {
       method: "PUT",

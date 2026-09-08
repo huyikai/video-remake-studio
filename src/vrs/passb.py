@@ -25,7 +25,7 @@ from vrs.textjson import parse_json_payload
 # 改发 1920x1080 的单帧：一张 100KB，细节留得住，上传也快得多。
 MAX_FRAMES = 8
 MAX_TRIES = 3
-WRITER_REV = 7
+WRITER_REV = 8
 # 金标 event_chain：硬切落在区间末尾，最后 0.2s 的格常是下一条第一帧。
 EDGE = 0.20
 
@@ -34,6 +34,8 @@ SCHEMA = """{
     "event_chain": "事件链：看见→靠近→接触→结果，一句一环，中文，点名物件和空间，不要收成结果态",
     "beats": ["a.aa-b.bb 开口前/说的时候/说完保持：视线/眉眼嘴/手与道具/身体/衣物怎么动，不要只写情绪名"],
     "amplitude": "档位（微表情/小幅度/中等/大幅度）；上限；情绪曲线",
+    "scene": "中文场景：地点、时段、光线、色温、地面、主要陈设，和 scene_lock 对应",
+    "soundscape": "中文环境音：底噪、衣物、呼吸、物体声，不含配乐，和 overall_soundscape 对应",
     "note": "拿不准的地方写在这里，没有就空字符串"
   },
   "style": "live-action photorealistic",
@@ -660,6 +662,209 @@ def assemble_md(doc: dict[str, Any], clip: dict[str, Any], facts: dict[str, Any]
 {txt.strip()}
 ```
 """
+
+
+def assemble_zh(doc: dict[str, Any], clip: dict[str, Any]) -> str:
+    """纯中文编辑稿：用户唯一可改的内容。不含英文 H3 正文、[Shot] 标记、时间戳。
+
+    对白原文另列在界面里（只读），这里只给可理解的中文脚本。
+    """
+    zh = doc.get("zh") or {}
+    beats = "\n".join(f"- {b}" for b in (zh.get("beats") or [])) or "（没写）"
+    people = "\n".join(
+        f"- ({s.get('id')}) {s.get('zh') or ''}" for s in (doc.get("speakers") or [])
+    ) or "（本段没有说话人）"
+    header = f"{clip['id']}\n源片 {_fmt(clip['t0'])}-{_fmt(clip['t1'])} ｜ 成片 {_fmt(clip['h3_seconds'])}s"
+    return "\n\n".join(
+        [
+            header,
+            f"## 事件链\n{zh.get('event_chain') or '（没写）'}",
+            f"## 表演节拍\n{beats}",
+            f"## 幅度\n{zh.get('amplitude') or '（没写）'}",
+            f"## 场景\n{zh.get('scene') or '（没写）'}",
+            f"## 环境音\n{zh.get('soundscape') or '（没写）'}",
+            f"## 人物\n{people}",
+            f"## 待确认\n{zh.get('note') or '（无）'}",
+        ]
+    )
+
+
+def _preserve_locks(current: dict[str, Any], new: dict[str, Any]) -> None:
+    """改写后强制复用旧的身份锁，避免同一人物换脸、跨段外观不一致。"""
+    old = {str(s.get("id")): s for s in (current.get("speakers") or [])}
+    for speaker in new.get("speakers") or []:
+        sid = str(speaker.get("id") or "")
+        prior = old.get(sid)
+        if not prior:
+            continue
+        if str(prior.get("lock") or "").strip():
+            speaker["lock"] = prior["lock"]
+        if str(prior.get("voice") or "").strip():
+            speaker["voice"] = prior["voice"]
+
+
+def build_rewrite_prompt(
+    clip: dict[str, Any],
+    facts: dict[str, Any],
+    *,
+    path: str,
+    current: dict[str, Any],
+    edit: dict[str, Any],
+    errors: list[str] | None = None,
+) -> str:
+    """在既有结构化脚本上，按用户的中文诉求重写并重新过检。"""
+    seconds = float(clip["h3_seconds"])
+    speech = "\n".join(
+        f"  {_fmt(s['a'])}-{_fmt(s['b'])}  「{s['text']}」（语气 {s['emotion'] or '未标'}）"
+        for s in facts["speech"]
+    ) or "  （本段没有对白）"
+    vision = "\n".join(
+        f"  {_fmt(_local(a, clip))}-{_fmt(_local(b, clip))}  {see}" for a, b, see in facts["vision"]
+    ) or "  （拍表格是空的，按附图写）"
+    cuts = "、".join(_fmt(c) + "s" for c in facts["cuts"]) or "（未检）"
+    actions = "\n".join(f"  {line}" for line in (facts.get("actions") or [])) or "  （无）"
+    mouths = "\n".join(f"  {m}" for m in (facts.get("mouths") or [])) or "  （未标）"
+    frames = "\n".join(
+        f"  {_fmt(_local(t, clip))}s（源片 {_fmt(t)}s）" for t, _p in (facts["frames"] or [])
+    ) or "  （没有可用帧）"
+    neighbor_block = "  （没有邻条对白）"
+    if facts.get("neighbors"):
+        rows = []
+        for item in facts["neighbors"]:
+            rows.append(f"  {item['id']} 源片 {_fmt(item['t0'])}-{_fmt(item['t1'])}s：" + " / ".join(item["lines"]))
+        neighbor_block = "\n".join(rows)
+    locked = "\n".join(
+        f"  {s.get('id')}：{s.get('lock')}" for s in (current.get("speakers") or [])
+    ) or "  （无）"
+
+    if PATH_KEYFRAMES.get(path):
+        mission = "你在改写一条 MiniMax H3 视频生成提示词。这是复刻原片，不是二创。"
+        frames_head = "附图（外观、站位、道具、光线以图为准）"
+        lock_rule = "说话人用 (S1)(S2)，已锁定的外观必须逐字复用，不许改写"
+    else:
+        mission = "你在改写一条 MiniMax H3 视频生成提示词。这是复刻原片的情节，不是摘要。"
+        frames_head = "附图（情节、场次、站位、道具、光线以图为准）"
+        lock_rule = "说话人用 (S1)(S2)，本条自己写完整 Identity lock 和 Voice lock"
+
+    mode = str(edit.get("mode") or "ai")
+    if mode == "manual":
+        instruction = (
+            "用户改后的中文脚本如下（这是唯一权威，英文正文按它重写；"
+            "事件链/表演节拍/幅度/场景/环境音/人物中文要照搬进 zh，再据此重写英文 shots）：\n\n"
+            f"```\n{edit.get('script_zh') or ''}\n```"
+        )
+    else:
+        instruction = f"用户要求：\n\n{edit.get('requirement') or '（未写）'}"
+
+    retry = ""
+    if errors:
+        retry = "\n## 上一版没过机检，只改这些\n\n" + "\n".join(f"- {e}" for e in errors) + "\n"
+
+    return f"""{mission}
+
+## 必须保留、不能改
+
+对白原文（进 <d> 必须逐字照抄，一个字都不能改、不能翻译、不能删）：
+{speech}
+
+邻条对白（禁止写进本条任何 <d>）：
+{neighbor_block}
+
+已锁定说话人外观（必须逐字复用，不许改写）：
+{locked}
+
+## 画面事实（以图为准，拍表只是索引）
+
+{frames_head}：
+{frames}
+
+8B 读出来的画面：
+{vision}
+
+窗级动作链：
+{actions}
+
+嘴型：
+{mouths}
+
+自动检测到的硬切（本条内部时间，参考，会漏）：{cuts}
+
+## 本条
+
+片段 {clip["id"]}｜源片 {_fmt(clip["t0"])}-{_fmt(clip["t1"])}s｜成片时长 {_fmt(seconds)}s（{clip["h3_frames"]} 帧）
+
+## 改写诉求
+
+{instruction}
+
+## 规矩
+
+- 全部英文，只有 <d> 里面能出现汉字；<d> 写成 `<d>[Chinese] 原句</d>`
+- 对白一字不改地落进某个镜头；邻条对白一个字都不写
+- 禁止 subtitle / caption / burned-in / on-screen text / Chinese text overlay
+- {lock_rule}
+- [Shot 1] 正文开头必须出现 Identity lock、Voice lock、Scene lock 三句，后面才是动作
+- [Shot 1] 开场必须对上附图第 1 张；末帧只停在附图最后一张的人和景
+- 英文动作用 From a.aa to b.bb 写出至少三截节拍，铺满 0 到 {_fmt(seconds)}s
+- zh.beats 用本条内部时间，同样至少三截
+- shots[0].at 必须是 null；后面的 at 严格递增且小于 {_fmt(seconds)}
+- 每一镜至少 {MIN_SHOT:.1f}s（含最后一镜）
+- style 只写 live-action photorealistic；non_diegetic_music 必须是 N/A
+- overall_soundscape 只写环境音、动作音、非语言人声，不要重复对白、不要配乐
+{retry}
+## 只输出这个 JSON，不要围栏不要解释
+
+{SCHEMA}
+"""
+
+
+def rewrite_clip(
+    settings: Settings,
+    clip: dict[str, Any],
+    facts: dict[str, Any],
+    *,
+    path: str,
+    current: dict[str, Any],
+    edit: dict[str, Any],
+    log: Any,
+) -> tuple[dict[str, Any], str]:
+    """按中文诉求改写一条，走同一套机检；失败抛 PassBError，不改盘。"""
+    seconds = float(clip["h3_seconds"])
+    allowed = [s["text"] for s in facts["speech"]]
+    errors: list[str] = []
+    last = "未知错误"
+    for attempt in range(MAX_TRIES):
+        stats: dict[str, Any] = {}
+        prompt = build_rewrite_prompt(clip, facts, path=path, current=current, edit=edit, errors=errors or None)
+        try:
+            images = [p for _t, p in _spread(list(facts["frames"] or []), 4)]
+            raw = generate_text(settings, prompt, images=images or None, stats=stats)
+            doc = parse_json_payload(raw, require="shots")
+        except (LLMError, ValueError, json.JSONDecodeError) as exc:
+            last = str(exc)
+            log(f"  {clip['id']} 改写第 {attempt + 1} 次：{last}")
+            continue
+        if not isinstance(doc, dict):
+            last = "返回的不是 JSON 对象"
+            continue
+        doc["clip_id"] = clip["id"]
+        doc["generate_path"] = path
+        _preserve_locks(current, doc)
+        txt = assemble_txt(doc, clip, path)
+        errors = (
+            check_clip(doc, seconds, allowed)
+            + check_header(clip["id"], txt, seconds)
+            + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
+        )
+        if not errors:
+            doc["writer_rev"] = WRITER_REV
+            doc["source_t0"] = float(clip["t0"])
+            doc["source_t1"] = float(clip["t1"])
+            log(f"  {clip['id']} 改写过检（{_fmt_stats(stats)}）")
+            return doc, txt
+        last = f"{len(errors)} 项机检未过"
+        log(f"  {clip['id']} 改写第 {attempt + 1} 次 {last}：{errors[0]}")
+    raise PassBError(f"{clip['id']} 改写 {MAX_TRIES} 次仍未过检：{last}")
 
 
 def _one_clip(

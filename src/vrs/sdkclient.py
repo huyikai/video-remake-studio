@@ -19,12 +19,12 @@ from typing import Any
 from vrs.settings import Settings
 from vrs.textjson import strip_think
 
-DEFAULT_SDK_MODEL = "composer-2.5"
+DEFAULT_SDK_MODEL = "grok-4.6"
 DEFAULT_RETRIES = 3
-DEFAULT_TIMEOUT = 180.0
+DEFAULT_TIMEOUT = 900.0
 
 GUARD = (
-    "你是一个纯文本推理器。禁止调用任何工具，禁止读写文件，"
+    "你是一个图文推理器。禁止调用任何工具，禁止读写文件，"
     "禁止执行命令，禁止联网。所有需要的输入都已内联在下面。"
     "只输出答案本身，不要输出解释、不要输出代码块围栏。\n\n"
 )
@@ -76,30 +76,29 @@ def hide_child_windows() -> None:
     subprocess.Popen.__init__ = hidden_init  # type: ignore[method-assign]
 
 
-def _cfg(settings: Settings) -> dict[str, Any]:
-    return dict(settings.providers.get("llm") or {})
+def _cfg(settings: Settings, section: str = "llm") -> dict[str, Any]:
+    return dict(settings.providers.get(section) or settings.providers.get("llm") or {})
 
 
-def resolve_api_key(settings: Settings) -> str:
+def resolve_api_key(settings: Settings, section: str = "llm") -> str:
     key = (os.environ.get("CURSOR_API_KEY") or "").strip()
     if key:
         return key
-    return str(_cfg(settings).get("api_key") or "").strip()
+    return str(_cfg(settings, section).get("api_key") or _cfg(settings).get("api_key") or "").strip()
 
 
-def sdk_model(settings: Settings) -> str:
-    return str(_cfg(settings).get("sdk_model") or "").strip() or DEFAULT_SDK_MODEL
+def sdk_model(settings: Settings, section: str = "llm") -> str:
+    return str(_cfg(settings, section).get("sdk_model") or _cfg(settings).get("sdk_model") or "").strip() or DEFAULT_SDK_MODEL
 
 
-def _model_plan(settings: Settings) -> list[tuple[str, list[str]]]:
-    """主模型 + 可选兜底。内容安全拒答是确定性的，重试同一个模型没用，换模型才有用。
-
-    参数是按模型定义的（grok 没有 thinking，composer 只有 fast），所以兜底另配一份。
-    """
-    cfg = _cfg(settings)
-    plan = [(sdk_model(settings), [str(p) for p in (cfg.get("sdk_params") or [])])]
-    fallback = str(cfg.get("sdk_fallback") or "").strip()
-    if fallback and fallback != plan[0][0]:
+def _model_plan(settings: Settings, section: str = "llm") -> list[tuple[str, list[str]]]:
+    """主模型 + 可选兜底；视觉和文本调用都走同一套 Cursor 配置。"""
+    cfg = _cfg(settings, section)
+    model = sdk_model(settings, section)
+    params = [str(p) for p in (cfg.get("sdk_params") or _cfg(settings).get("sdk_params") or [])]
+    plan = [(model, params)]
+    fallback = str(cfg.get("sdk_fallback") or _cfg(settings).get("sdk_fallback") or "").strip()
+    if fallback and fallback != model:
         plan.append((fallback, [str(p) for p in (cfg.get("sdk_fallback_params") or [])]))
     return plan
 
@@ -118,31 +117,31 @@ def _selection(model: str, params: list[str]) -> Any:
     return ModelSelection(id=model, params=tuple(values))
 
 
-def _options(settings: Settings, model: str, params: list[str], sandbox: str) -> Any:
+def _options(settings: Settings, model: str, params: list[str], sandbox: str, section: str = "llm") -> Any:
     from cursor_sdk import AgentOptions, LocalAgentOptions
 
-    mode = str(_cfg(settings).get("sdk_mode") or "agent").strip() or "agent"
+    cfg = _cfg(settings, section)
+    mode = str(cfg.get("sdk_mode") or "agent").strip() or "agent"
     return AgentOptions(
         model=_selection(model, params),
-        api_key=resolve_api_key(settings),
+        api_key=resolve_api_key(settings, section),
         mode=mode,
-        # 输入全部内联，所以 cwd 给一个空临时目录：读不到金标，写也只写进随后被删的目录。
         local=LocalAgentOptions(cwd=sandbox, setting_sources=[]),
         tools=[],
     )
 
 
-def sdk_health(settings: Settings) -> tuple[bool, str]:
+def sdk_health(settings: Settings, section: str = "llm") -> tuple[bool, str]:
     try:
         import cursor_sdk  # noqa: F401
     except ImportError:
         return False, "未安装 cursor-sdk，请执行 uv sync --extra sdk"
-    if not resolve_api_key(settings):
-        return False, "缺少 CURSOR_API_KEY（环境变量，或 providers.yaml 的 llm.api_key）"
-    plan = _model_plan(settings)
+    if not resolve_api_key(settings, section):
+        return False, "缺少 CURSOR_API_KEY（环境变量，或 providers.yaml 的 api_key）"
+    plan = _model_plan(settings, section)
     head = " ".join([plan[0][0], *plan[0][1]])
     tail = f"，兜底 {plan[1][0]}" if len(plan) > 1 else ""
-    mode = str(_cfg(settings).get("sdk_mode") or "agent").strip() or "agent"
+    mode = str(_cfg(settings, section).get("sdk_mode") or "agent").strip() or "agent"
     return True, f"cursor_sdk {head}{tail}（local，mode={mode}）"
 
 
@@ -171,10 +170,11 @@ async def _prompt_with_retry(
     retries: int,
     timeout: float,
     trace: list[str],
+    section: str = "llm",
 ) -> Any:
     from cursor_sdk import AsyncAgent, AsyncClient
 
-    plan = _model_plan(settings)
+    plan = _model_plan(settings, section)
     async with await AsyncClient.launch_bridge(workspace=sandbox) as client:
         for model, params in plan:
             for i in range(retries):
@@ -183,7 +183,7 @@ async def _prompt_with_retry(
                 try:
                     result = await asyncio.wait_for(
                         AsyncAgent.prompt(
-                            message, _options(settings, model, params, sandbox), client=client
+                            message, _options(settings, model, params, sandbox, section), client=client
                         ),
                         timeout=timeout,
                     )
@@ -206,20 +206,21 @@ def generate_text(
     settings: Settings,
     prompt: str,
     *,
-    thinking: bool | None = None,  # noqa: ARG001 - agent 侧自己决定，保持签名一致
-    max_new_tokens: int | None = None,  # noqa: ARG001
+    thinking: bool | None = None,
+    max_new_tokens: int | None = None,
     images: Sequence[Path] | None = None,
     stats: dict[str, Any] | None = None,
+    section: str = "llm",
 ) -> str:
     try:
         import cursor_sdk  # noqa: F401
     except ImportError as exc:
         raise SDKError("未安装 cursor-sdk，请执行 uv sync --extra sdk") from exc
-    if not resolve_api_key(settings):
-        raise SDKError("缺少 CURSOR_API_KEY（环境变量，或 providers.yaml 的 llm.api_key）")
+    if not resolve_api_key(settings, section):
+        raise SDKError("缺少 CURSOR_API_KEY（环境变量，或 providers.yaml 的 api_key）")
 
     hide_child_windows()
-    cfg = _cfg(settings)
+    cfg = _cfg(settings, section)
     retries = max(1, int(cfg.get("sdk_retries") or DEFAULT_RETRIES))
     timeout = float(cfg.get("sdk_timeout") or DEFAULT_TIMEOUT)
 
@@ -229,7 +230,7 @@ def generate_text(
         message = _message(GUARD + prompt, images)
         result = asyncio.run(
             _prompt_with_retry(
-                settings, message, sandbox, retries=retries, timeout=timeout, trace=trace
+                settings, message, sandbox, retries=retries, timeout=timeout, trace=trace, section=section
             )
         )
     except SDKError:

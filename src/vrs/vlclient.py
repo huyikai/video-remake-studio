@@ -77,6 +77,7 @@ LOOK_PROMPT = """\
 LOOK_REV = 3
 
 DEFAULT_VL_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
+CURSOR_SDK_KIND = "cursor_sdk"
 _THINK = re.compile(r"<think>.*?</think>", re.S)
 _SESSION: dict[str, Any] = {"model": None, "processor": None, "key": None}
 
@@ -87,7 +88,7 @@ class VLError(RuntimeError):
 
 def resolve_vl(settings: Settings) -> dict[str, Any]:
     cfg = dict(settings.providers.get("vl") or {})
-    cfg.setdefault("kind", "transformers")
+    cfg.setdefault("kind", CURSOR_SDK_KIND)
     cfg.setdefault("model", DEFAULT_VL_MODEL)
     return cfg
 
@@ -150,13 +151,18 @@ def ensure_vl_weights(settings: Settings) -> Path:
 
 def vl_health(settings: Settings) -> tuple[bool, str]:
     cfg = resolve_vl(settings)
-    kind = str(cfg.get("kind") or "transformers").strip() or "transformers"
+    kind = str(cfg.get("kind") or CURSOR_SDK_KIND).strip() or CURSOR_SDK_KIND
     model = _model_id(cfg)
     low = model.lower()
     if "-2b" in low or ":2b" in low or low.endswith("/2b"):
         return False, "VL 必须是 Qwen3-VL-8B-Instruct，不能用 2B"
     if "11434" in str(cfg.get("base_url") or ""):
         return False, "不要把 VL 指到 Ollama（吃不了视频，也不是 8B Transformers）"
+
+    if kind == CURSOR_SDK_KIND:
+        from vrs.sdkclient import sdk_health
+
+        return sdk_health(settings, section="vl")
 
     if kind == "openai_compat":
         base = str(cfg.get("base_url") or "").rstrip("/")
@@ -406,6 +412,125 @@ def _tf_generate(
         raise VLError(str(exc)) from exc
 
 
+def _cursor_analyze_images(
+    settings: Settings,
+    images: list[Path],
+    prompt: str,
+    *,
+    max_new_tokens: int,
+    max_edge: int | None = None,
+) -> str:
+    from vrs.sdkclient import SDKError, generate_text
+
+    edge = int(max_edge if max_edge is not None else settings.default.get("vl_image_max_edge") or 1024)
+    paths = [path for path in images if path.is_file()]
+    if not paths:
+        raise VLError("没有可读的图片")
+    if edge > 0:
+        prepared: list[Path] = []
+        for index, path in enumerate(paths):
+            dest = path.parent / "_vl" / f"cursor_{index:02d}_{path.name}"
+            _shrink_vl_image(path, dest, edge)
+            prepared.append(dest)
+        paths = prepared
+    stats: dict[str, Any] = {}
+    try:
+        return generate_text(
+            settings,
+            prompt,
+            images=paths,
+            max_new_tokens=max_new_tokens,
+            stats=stats,
+            section="vl",
+        )
+    except SDKError as exc:
+        raise VLError(str(exc)) from exc
+
+
+def _cursor_analyze_video(
+    settings: Settings,
+    clip: Path,
+    *,
+    t0: float,
+    t1: float,
+    shots: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    from vrs.sdkclient import sdk_model
+
+    frames = int(settings.default.get("vl_video_num_frames") or 8)
+    max_edge = int(settings.default.get("vl_image_max_edge") or 1024)
+    from vrs.media import extract_frame_at
+    from vrs.probe import probe_video
+
+    duration = float(probe_video(clip)["duration"])
+    lo = max(0.0, min(float(t0), duration))
+    hi = max(lo + 0.05, min(float(t1) if t1 > 0 else duration, duration))
+    if hi - lo < 0.05:
+        lo, hi = 0.0, duration
+    n = max(4, min(frames, 8))
+    folder = clip.parent / f"{clip.stem}_cursor_{int(round(lo * 100)):05d}-{int(round(hi * 100)):05d}"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for index in range(n):
+        raw = folder / f"{index:02d}.jpg"
+        stamp = lo + (index + 0.5) / n * (hi - lo)
+        if not raw.is_file():
+            extract_frame_at(clip, raw, stamp)
+        paths.append(raw)
+    prompt = (
+        f"{VIDEO_PROMPT}\n时间范围 {t0:.2f}-{t1:.2f} 秒。\n{_shot_lines(shots)}\n"
+        "以下图片按时间顺序对应该范围；必须逐张对应 shot_id，不要把相邻镜头合并。"
+    )
+    try:
+        raw = _cursor_analyze_images(
+            settings,
+            paths,
+            prompt,
+            max_new_tokens=int(settings.default.get("vl_video_max_tokens") or 2400),
+            max_edge=max_edge,
+        )
+        return {
+            "ok": True,
+            "mode": "cursor_frames",
+            "raw": raw,
+            "num_frames": len(paths),
+            "model": sdk_model(settings, "vl"),
+            "backend": "cursor_sdk",
+        }
+    except VLError as exc:
+        return {"ok": False, "mode": "cursor_frames", "error": str(exc), "backend": "cursor_sdk"}
+
+
+def _cursor_analyze_frames(
+    settings: Settings,
+    frames: list[Path],
+    *,
+    shot_id: str,
+    t0: float,
+    t1: float,
+) -> dict[str, Any]:
+    from vrs.sdkclient import sdk_model
+
+    prompt = f"{FRAMES_PROMPT}\n镜头 {shot_id}，时间 {t0:.2f}-{t1:.2f} 秒。"
+    try:
+        raw = _cursor_analyze_images(
+            settings,
+            frames,
+            prompt,
+            max_new_tokens=int(settings.default.get("vl_frames_max_tokens") or 1200),
+        )
+        return {
+            "ok": True,
+            "mode": "cursor_frames",
+            "raw": raw,
+            "backend": "cursor_sdk",
+            "model": sdk_model(settings, "vl"),
+            "frames": [path.name for path in frames[:4]],
+        }
+    except VLError as exc:
+        return {"ok": False, "mode": "cursor_frames", "error": str(exc), "backend": "cursor_sdk"}
+
+
 def analyze_image(
     settings: Settings,
     image: Path,
@@ -431,6 +556,8 @@ def analyze_images(
     tokens = int(max_new_tokens or settings.default.get("vl_beats_max_tokens") or 1800)
     edge = int(max_edge if max_edge is not None else settings.default.get("vl_look_max_edge") or 768)
     cfg = resolve_vl(settings)
+    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+        return _cursor_analyze_images(settings, paths, prompt, max_new_tokens=tokens, max_edge=edge)
     if str(cfg.get("kind") or "transformers") == "openai_compat":
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for frame in paths:
@@ -625,6 +752,8 @@ def analyze_video(
     shots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cfg = resolve_vl(settings)
+    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+        return _cursor_analyze_video(settings, clip, t0=t0, t1=t1, shots=shots)
     if str(cfg.get("kind") or "transformers") != "openai_compat":
         return _tf_analyze_video(settings, clip, t0=t0, t1=t1, shots=shots)
     text = f"{VIDEO_PROMPT}\n时间范围 {t0:.2f}-{t1:.2f} 秒。\n{_shot_lines(shots)}"
@@ -648,6 +777,8 @@ def analyze_frames(
     t1: float,
 ) -> dict[str, Any]:
     cfg = resolve_vl(settings)
+    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+        return _cursor_analyze_frames(settings, frames, shot_id=shot_id, t0=t0, t1=t1)
     if str(cfg.get("kind") or "transformers") != "openai_compat":
         return _tf_analyze_frames(settings, frames, shot_id=shot_id, t0=t0, t1=t1)
     text = f"{FRAMES_PROMPT}\n镜头 {shot_id}，时间 {t0:.2f}-{t1:.2f} 秒。"
@@ -668,6 +799,17 @@ def analyze_frames_batch(settings: Settings, items: list[dict[str, Any]]) -> lis
     if not items:
         return []
     cfg = resolve_vl(settings)
+    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+        return [
+            _cursor_analyze_frames(
+                settings,
+                item["paths"],
+                shot_id=str(item["shot_id"]),
+                t0=float(item["t0"]),
+                t1=float(item["t1"]),
+            )
+            for item in items
+        ]
     if str(cfg.get("kind") or "transformers") == "openai_compat":
         return [
             analyze_frames(
@@ -702,7 +844,9 @@ def look_frames(
     tokens = int(settings.default.get("vl_look_max_tokens") or 2200)
     cfg = resolve_vl(settings)
     try:
-        if str(cfg.get("kind") or "transformers") == "openai_compat":
+        if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+            raw = _cursor_analyze_images(settings, paths, prompt, max_new_tokens=tokens, max_edge=max_edge)
+        elif str(cfg.get("kind") or "transformers") == "openai_compat":
             content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
             for frame in paths:
                 content.append({"type": "image_url", "image_url": {"url": _image_data_url(frame)}})

@@ -356,10 +356,15 @@ def rerun_drafts(settings: Settings, job_id: str, clip_ids: list[str] | None = N
     if not wanted:
         wanted = [str(c["id"]) for c in clips]
     for clip_id in wanted:
-        dest = clip_output_dir(directory, path, "draft") / f"{clip_id}.mp4"
-        dest.unlink(missing_ok=True)
+        draft_dest = clip_output_dir(directory, path, "draft") / f"{clip_id}.mp4"
+        draft_dest.unlink(missing_ok=True)
+        # 脚本变了，成片也必须作废，否则会一直卡在「再出试片」且成片永不重生成
+        final_dest = clip_output_dir(directory, path, "final") / f"{clip_id}.mp4"
+        final_dest.unlink(missing_ok=True)
     concat = directory / "output" / path / "draft.mp4"
     concat.unlink(missing_ok=True)
+    final_concat = directory / "output" / path / "final.mp4"
+    final_concat.unlink(missing_ok=True)
     gen = job.get("stages", {}).get("generate") or {}
     if gen.get("status") == "done":
         gen["status"] = "pending"

@@ -1,22 +1,26 @@
 llm:
-  # cursor_sdk = Cursor SDK 本地 agent；transformers = 本机 Qwen3.5-9B
+  # Cursor SDK agent；文本推理统一使用 grok-4.6
   kind: cursor_sdk
   model: Qwen/Qwen3.5-9B
-  # 拆段是纯推理，弱模型在相邻候选之间会随机摇摆；composer-2.5 每跑一次结果都不同。
   sdk_model: grok-4.6
   sdk_params: ["effort=high"]
-  # 主模型连着失败时换的兜底（内容安全拒答是确定性的，重试同一个没用，换族才有用）
-  sdk_fallback: claude-opus-5
-  sdk_fallback_params: ["thinking=true", "effort=high"]
+  sdk_fallback: ""
+  sdk_fallback_params: []
   sdk_mode: agent
   sdk_retries: 3
-  # Pass B 带 6 张单帧、effort=high，单次要三五分钟；180s 会让主模型每段都超时白烧
   sdk_timeout: 900
-  # api_key 优先读环境变量 CURSOR_API_KEY；要写死就填 config/local.yaml
 
 vl:
-  kind: transformers
+  # Cursor SDK 负责视觉理解；ASR/OCR/口播情绪仍走本地专用模型
+  kind: cursor_sdk
   model: Qwen/Qwen3-VL-8B-Instruct
+  sdk_model: grok-4.6
+  sdk_params: ["effort=high"]
+  sdk_fallback: ""
+  sdk_fallback_params: []
+  sdk_mode: agent
+  sdk_retries: 3
+  sdk_timeout: 900
 
 comfy:
   base_url: "http://127.0.0.1:8188"

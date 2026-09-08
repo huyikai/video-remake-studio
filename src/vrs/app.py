@@ -18,6 +18,7 @@ from vrs.jobops import (
     confirm_aspect,
     delete_job,
     patch_settings,
+    preview_clip_script,
     probe_local_file,
     save_all_json,
     save_clip_script,
@@ -72,9 +73,17 @@ class AspectBody(BaseModel):
 
 
 class ClipSave(BaseModel):
+    script_zh: str | None = None
+    requirement: str | None = None
     prompt_json: dict[str, Any] | None = None
     prompt_txt: str | None = None
     review_md: str | None = None
+    h3_seconds: float | None = None
+
+
+class ClipPreview(BaseModel):
+    script_zh: str | None = None
+    requirement: str | None = None
     h3_seconds: float | None = None
 
 
@@ -377,6 +386,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 _settings(),
                 job_id,
                 clip_id,
+                script_zh=body.script_zh,
+                requirement=body.requirement,
                 prompt_json=body.prompt_json,
                 prompt_txt=body.prompt_txt,
                 review_md=body.review_md,
@@ -384,6 +395,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except FileNotFoundError:
             raise HTTPException(404, "任务不存在") from None
+        except BusyError as exc:
+            raise _http_busy(exc) from exc
+        except JobOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/clips/{clip_id}/rewrite")
+    def api_rewrite_clip(job_id: str, clip_id: str, body: ClipPreview) -> dict:
+        try:
+            return preview_clip_script(
+                _settings(),
+                job_id,
+                clip_id,
+                script_zh=body.script_zh,
+                requirement=body.requirement,
+                h3_seconds=body.h3_seconds,
+            )
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
+        except BusyError as exc:
+            raise _http_busy(exc) from exc
         except JobOpsError as exc:
             raise HTTPException(400, str(exc)) from exc
 

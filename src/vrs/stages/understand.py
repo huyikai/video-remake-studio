@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from vrs.asr import resolve_aligner_model, resolve_asr_model, transcribe_wav, transcript_stale
-from vrs.beats import run_beat_table
+from vrs.beats import run_beat_table, window_failed
 from vrs.dialogue import (
     adjudicate_ocr_asr,
     finalize_transcript,
@@ -145,7 +145,10 @@ def _events_done(directory: Path) -> bool:
     beats = _load_json(directory / "beats.json")
     if not events or not isinstance(events.get("events"), list) or not events["events"]:
         return False
-    if not beats or not beats.get("windows"):
+    windows = list((beats or {}).get("windows") or [])
+    if not windows:
+        return False
+    if any(window_failed(window) for window in windows):
         return False
     return True
 
@@ -156,8 +159,8 @@ def _beats_complete(beats: dict[str, Any] | None, duration: float) -> bool:
     windows = beats.get("windows") or []
     if not windows:
         return False
-    if any(w.get("error") for w in windows):
-        # 跑失败的窗会在该段里断掉「人物组变化」这条信号，resume 时要重问
+    errors = [w for w in windows if window_failed(w)]
+    if errors:
         return False
     last = max(float(w.get("end") or 0) for w in windows)
     if last < duration - 0.6:
@@ -305,9 +308,11 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
                 dialogue=dialogue,
                 log_path=log,
             )
-            n_err = sum(1 for w in (beats.get("windows") or []) if w.get("error"))
+            n_err = sum(1 for w in (beats.get("windows") or []) if window_failed(w))
             n_win = len(beats.get("windows") or [])
             _log(directory, f"拍表 windows={n_win} errors={n_err}")
+            if n_win == 0 or n_err:
+                raise UnderstandWaiting(f"视觉理解未完成：{n_err}/{n_win} 个窗口失败，请检查 Cursor SDK 后重试")
             unload_vl()
             if n_win < 3:
                 raise UnderstandWaiting("拍表窗太少，resume 会重试")
@@ -334,11 +339,18 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
         unload_vl()
         unload_llm()
         vl_cfg = resolve_vl(settings)
+        beat_windows = list((beats or {}).get("windows") or [])
+        beat_failed = sum(1 for window in beat_windows if window_failed(window))
         understanding = {
             "done": True,
             "path": "beats",
             "duration": duration,
-            "windows": len((beats or {}).get("windows") or []),
+            "windows": len(beat_windows),
+            "visual_windows_total": len(beat_windows),
+            "visual_windows_ok": len(beat_windows) - beat_failed,
+            "visual_windows_failed": beat_failed,
+            "visual_success_rate": round((len(beat_windows) - beat_failed) / len(beat_windows), 4) if beat_windows else 0.0,
+            "shots": len((shots_doc or {}).get("shots") or []),
             "events": len(events.get("events") or []),
             "speech_segments": len(dialogue.get("speech") or []),
             "on_screen": len(dialogue.get("on_screen") or []),
