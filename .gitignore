@@ -16,6 +16,7 @@ logs/
 
 data/jobs/*
 !data/jobs/.gitkeep
+data/browser/
 
 node_modules/
 web/node_modules/

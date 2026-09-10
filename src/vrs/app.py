@@ -17,6 +17,7 @@ from vrs.jobops import (
     JobOpsError,
     confirm_aspect,
     delete_job,
+    import_douyin_cookie,
     patch_settings,
     preview_clip_script,
     probe_local_file,
@@ -40,6 +41,7 @@ from vrs.runner import (
     cancel_job,
     create_and_download,
     rerun_drafts,
+    run_assemble,
     run_finals,
 )
 from vrs.settings import Settings
@@ -110,7 +112,14 @@ class SettingsPatch(BaseModel):
     ass_burn: bool | None = None
     smtp_enabled: bool | None = None
     smtp_to: list[str] | str | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None
     t2va: dict[str, Any] | None = None
+    douyin_cookie: str | None = None
+
+
+class DouyinCookieImport(BaseModel):
+    force_window: bool = False
 
 
 class DraftBody(BaseModel):
@@ -185,6 +194,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if payload.get("mode") == "real" and _settings().mode() != "real":
                 payload["mode"] = "real"
             return patch_settings(_settings(), payload)
+        except JobOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/settings/smtp-test")
+    def api_smtp_test() -> dict[str, Any]:
+        from vrs.mailer import send_mail
+        from vrs.smtpcheck import smtp_credentials_ready, smtp_enabled
+
+        cfg = _settings().smtp
+        if not smtp_enabled(cfg):
+            raise HTTPException(400, "SMTP 未启用")
+        if not smtp_credentials_ready(cfg):
+            raise HTTPException(400, "未配置邮箱或授权码")
+        err = send_mail(
+            cfg,
+            subject="VRS 测试",
+            body="这是 Video Remake Studio 的测试信。若收到此邮件，说明 SMTP 已可用。",
+        )
+        tos = cfg.get("to") or []
+        if isinstance(tos, str):
+            dest = tos
+        else:
+            dest = ", ".join(str(x) for x in tos if str(x).strip())
+        if err:
+            return {"ok": False, "detail": err}
+        return {"ok": True, "detail": f"已发送到 {dest or '收件人'}"}
+
+    @app.post("/api/settings/douyin-cookie/import")
+    def api_import_douyin_cookie(body: DouyinCookieImport | None = None) -> dict:
+        try:
+            force = bool(body.force_window) if body is not None else False
+            return import_douyin_cookie(_settings(), force_window=force)
         except JobOpsError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -341,18 +382,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status, str(exc)) from exc
 
     @app.post("/api/jobs/{job_id}/final")
-    def api_final(job_id: str) -> dict:
+    def api_final(job_id: str, body: DraftBody | None = None) -> dict:
+        try:
+            if occupied_job_id(_settings()):
+                raise BusyError(f"已有任务在跑：{occupied_job_id(_settings())}")
+            ids = list((body or DraftBody()).clip_ids)
+
+            def fn() -> None:
+                run_finals(_settings(), job_id, ids or None)
+
+            if _settings().mode() == "mock":
+                from vrs.mock import final
+
+                final(_settings(), job_id, ids or None)
+            else:
+                from vrs.worker import spawn
+
+                spawn(_settings(), job_id, fn)
+            _, job = get_job(_settings(), job_id)
+            return job
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
+        except (BusyError, IngestGateError) as exc:
+            status = 409 if isinstance(exc, BusyError) else 400
+            raise HTTPException(status, str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/assemble")
+    def api_assemble(job_id: str) -> dict:
         try:
             if occupied_job_id(_settings()):
                 raise BusyError(f"已有任务在跑：{occupied_job_id(_settings())}")
 
             def fn() -> None:
-                run_finals(_settings(), job_id)
+                run_assemble(_settings(), job_id)
 
             if _settings().mode() == "mock":
-                from vrs.mock import final
+                from vrs.mock import assemble
 
-                final(_settings(), job_id)
+                assemble(_settings(), job_id)
             else:
                 from vrs.worker import spawn
 

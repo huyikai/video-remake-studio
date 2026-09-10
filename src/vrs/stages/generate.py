@@ -397,25 +397,39 @@ def run_generate(
         mark_stage(job, directory, "generate", "done")
         subset = only_clips(job)
         subset_note = f"（验证 {', '.join(subset)}）" if subset else ""
+        mode = str((job.get("options") or {}).get("review_mode") or "pause_draft")
         if quality == "draft":
-            job["state"] = "paused"
-            job["stage"] = "finish"
-            job["note"] = (
-                f"试片 {len(clips)} 段已齐{subset_note}{concat_note}。"
-                f"看 generate/{path}/draft/ 或 output/{path}/draft.mp4，出成片按同一脚本生成并交付"
-            )
-            if concat_rel:
-                send_mail(
-                    settings.smtp,
-                    subject=f"VRS 试片待审 {job['id']}",
-                    body=f"job {job['id']}\n{job['note']}\n本机 {(directory / concat_rel).resolve()}",
-                    attachments=[directory / concat_rel],
-                    log=lambda text: _log(directory, text),
+            job["stage"] = "generate"
+            if mode == "full_auto":
+                job["state"] = "running"
+                job["note"] = (
+                    f"试片 {len(clips)} 段已齐{subset_note}{concat_note}；自动质检后出各段成片"
                 )
+            else:
+                job["state"] = "paused"
+                job["note"] = (
+                    f"试片 {len(clips)} 段已齐{subset_note}{concat_note}。"
+                    "对照各段试片，确认后生成各段成片"
+                )
+                if concat_rel:
+                    send_mail(
+                        settings.smtp,
+                        subject=f"VRS 试片待审 {job['id']}",
+                        body=f"job {job['id']}\n{job['note']}\n本机 {(directory / concat_rel).resolve()}",
+                        attachments=[directory / concat_rel],
+                        log=lambda text: _log(directory, text),
+                    )
+        elif mode == "full_auto":
+            job["state"] = "running"
+            job["stage"] = "finish"
+            job["note"] = f"各段成片 {len(clips)} 段已齐{subset_note}{concat_note}；拼接成片"
         else:
             job["state"] = "paused"
-            job["stage"] = "finish"
-            job["note"] = f"成片 {len(clips)} 段已齐{subset_note}{concat_note}；resume 拼接"
+            job["stage"] = "generate"
+            job["note"] = (
+                f"各段成片 {len(clips)} 段已齐{subset_note}{concat_note}。"
+                "确认后点「拼接成片」裁切拼接并烧字"
+            )
         save_status(job, directory)
         return job
     except JobCancelled:

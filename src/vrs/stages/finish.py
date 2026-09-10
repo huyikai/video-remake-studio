@@ -11,6 +11,7 @@ from vrs.cover import write_cover
 from vrs.deliver import trim_and_concat
 from vrs.h3grid import normalize_generate_path
 from vrs.jobstore import mark_stage, save_status
+from vrs.lock import atomic_write_json
 from vrs.mailer import send_mail
 from vrs.media import burn_ass
 from vrs.probe import ProbeError
@@ -52,9 +53,7 @@ def _clips(directory: Path) -> list[dict[str, Any]]:
 def _pick_quality(directory: Path, clips: list[dict[str, Any]], path: str) -> str:
     if quality_complete(directory, clips, "final", path=path):
         return "final"
-    if quality_complete(directory, clips, "draft", path=path):
-        return "draft"
-    raise FinishError("还没有可拼接的生成段")
+    raise FinishError("各段成片还没齐，不能拼接")
 
 
 def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict[str, Any]:
@@ -86,9 +85,11 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
         )
         dest = out_dir / f"{quality}.mp4"
         dialogue = _load_json(directory / "dialogue.json") or {}
+        ass_events = 0
+        burned_ass = False
         if bool(settings.default.get("ass_burn", True)):
             ass_path = out_dir / f"{quality}.ass"
-            n = write_ass(
+            ass_events = write_ass(
                 ass_path,
                 dialogue,
                 clips,
@@ -98,7 +99,8 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
             burn_ass(scaled, ass_path, burned, log_path=log)
             dest.unlink(missing_ok=True)
             burned.replace(dest)
-            _log(directory, f"烧 ASS {n} 条 → {dest.relative_to(directory)}")
+            burned_ass = True
+            _log(directory, f"烧 ASS {ass_events} 条 → {dest.relative_to(directory)}")
         elif scaled.resolve() != dest.resolve():
             dest.write_bytes(scaled.read_bytes())
         cover = out_dir / "cover.jpg"
@@ -111,12 +113,25 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
             log=lambda text: _log(directory, text),
         )
         rel = f"output/{path}/{quality}.mp4"
+        atomic_write_json(
+            directory / "finish.json",
+            {
+                "ok": True,
+                "quality": quality,
+                "clips": len(clips),
+                "concat": True,
+                "ass_burn": burned_ass,
+                "ass_events": ass_events,
+                "cover": how,
+                "file": rel,
+            },
+        )
         send_mail(
             settings.smtp,
-            subject=f"VRS 完成 {job['id']}（{quality}）",
+            subject=f"VRS 完成 {job['id']}（拼接成片）",
             body=(
                 f"job {job['id']}\nquality {quality}\nclips {len(clips)}\n"
-                f"video {dest.resolve()}\ncover {cover.resolve()} ({how})"
+                f"ass {ass_events}\nvideo {dest.resolve()}\ncover {cover.resolve()} ({how})"
             ),
             attachments=[dest],
             log=lambda text: _log(directory, text),
@@ -124,17 +139,12 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
         mark_stage(job, directory, "finish", "done")
         job["state"] = "done"
         job["stage"] = "finish"
-        job["note"] = f"完成：{rel}（{quality}，{len(clips)} 段，封面 {how}）"
+        ass_note = f"，烧字 {ass_events} 条" if burned_ass else "，未烧字"
+        job["note"] = f"拼接成片完成：{rel}（{len(clips)} 段{ass_note}，封面 {how}）"
         save_status(job, directory)
         return job
     except (FinishError, ProbeError, OSError) as exc:
         mark_stage(job, directory, "finish", "failed", error=str(exc))
         job["note"] = str(exc)
         save_status(job, directory)
-        send_mail(
-            settings.smtp,
-            subject=f"VRS 失败 {job.get('id')}",
-            body=str(exc),
-            log=lambda text: _log(directory, text),
-        )
         raise

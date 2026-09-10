@@ -7,11 +7,11 @@ from pathlib import Path
 from vrs.aspect import aspect_mismatch
 from vrs.cancel import JobCancelled, clear_cancel, raise_if_cancelled, request_cancel
 from vrs.envcheck import collect_env
-from vrs.jobstore import create_job, get_job, iter_jobs, save_status
+from vrs.jobstore import create_job, get_job, iter_jobs, mark_stage, save_status
 from vrs.lock import BusyError, JobLock
-from vrs.mailer import send_mail
+from vrs.mailer import failure_mail_body, failure_mail_subject, send_mail
 from vrs.settings import Settings
-from vrs.smtpcheck import smtp_enabled
+from vrs.smtpcheck import smtp_credentials_ready, smtp_enabled
 from vrs.stages.download import run_download
 from vrs.stages.finish import run_finish
 from vrs.stages.generate import clip_output_dir, job_generate_path, quality_complete, run_generate
@@ -31,12 +31,15 @@ def _gate(settings: Settings, *, kind: str, want_smtp: bool, url: str | None = N
     if not env["gate_new_job"]["ok"]:
         reasons.extend(env["gate_new_job"]["reasons"])
     if kind == "url":
-        from vrs.f2douyin import is_douyin_url
+        from vrs.f2douyin import cookie_ready, is_douyin_url
 
         if url and is_douyin_url(url):
             f2 = next((i for i in env["install"] if i["id"] == "f2"), None)
             if f2 and not f2["ok"]:
                 reasons.append("抖音进料需要安装 f2（uv sync）")
+            cookie_ok, cookie_detail = cookie_ready(settings)
+            if not cookie_ok:
+                reasons.append(cookie_detail)
         else:
             ytdlp = next((i for i in env["install"] if i["id"] == "yt-dlp"), None)
             if ytdlp and not ytdlp["ok"]:
@@ -44,10 +47,8 @@ def _gate(settings: Settings, *, kind: str, want_smtp: bool, url: str | None = N
     ffmpeg = next((i for i in env["install"] if i["id"] == "ffmpeg"), None)
     if ffmpeg and not ffmpeg["ok"]:
         reasons.append("缺少 ffmpeg")
-    if want_smtp and smtp_enabled(settings.smtp):
-        smtp = next((i for i in env["live"] if i["id"] == "smtp"), None)
-        if smtp and not smtp["ok"]:
-            reasons.append("SMTP 已启用但连接/登录失败")
+    if want_smtp and smtp_enabled(settings.smtp) and not smtp_credentials_ready(settings.smtp):
+        reasons.append("SMTP 已启用但未配置邮箱或授权码")
     uniq: list[str] = []
     for item in reasons:
         if item not in uniq:
@@ -121,12 +122,12 @@ def _continue_generate(settings: Settings, job: dict, directory: Path) -> dict:
     clips = _clips(directory)
     mode = str((job.get("options") or {}).get("review_mode") or "pause_draft")
     path = job_generate_path(directory, job)
-    made_draft_now = False
     if clips and not quality_complete(directory, clips, "draft", path=path):
         job = run_generate(settings, job, directory, quality="draft")
         if job.get("stages", {}).get("generate", {}).get("status") != "done":
             return job
-        made_draft_now = True
+        if mode != "full_auto":
+            return job
     if mode == "full_auto":
         from vrs.stages.draftreview import run_auto_review
 
@@ -142,12 +143,8 @@ def _continue_generate(settings: Settings, job: dict, directory: Path) -> dict:
                 return job
         raise_if_cancelled(directory)
         return run_finish(settings, job, directory)
-    if made_draft_now:
-        return job
     if clips and not quality_complete(directory, clips, "final", path=path):
-        job = run_generate(settings, job, directory, quality="final")
-        if job.get("stages", {}).get("generate", {}).get("status") != "done":
-            return job
+        return run_generate(settings, job, directory, quality="final")
     raise_if_cancelled(directory)
     return run_finish(settings, job, directory)
 
@@ -211,12 +208,18 @@ def _run_created(settings: Settings, job_id: str) -> dict:
         if job.get("stages", {}).get("download", {}).get("status") == "pending":
             shutil.rmtree(directory, ignore_errors=True)
         raise
-    except Exception:
+    except Exception as exc:
         _, failed = get_job(settings, job_id)
+        err = str(exc).split("\nTraceback")[0].strip() or "异常退出"
+        if failed.get("state") == "running":
+            failed["state"] = "failed"
+        if not str(failed.get("note") or "").strip() or str(failed.get("note")).lower() in {"failed", "running"}:
+            failed["note"] = err
+            save_status(failed, directory)
         send_mail(
             settings.smtp,
-            subject=f"VRS 失败 {job_id}",
-            body=str(failed.get("note") or failed.get("state") or "异常退出"),
+            subject=failure_mail_subject(failed, exc=exc),
+            body=failure_mail_body(failed, exc=exc, directory=directory),
         )
         return failed
 
@@ -295,12 +298,19 @@ def resume_download(
         from vrs.mock import resume_now as mock_resume
 
         return mock_resume(settings, job_id)
-    _gate(
-        settings,
-        kind=kind,
-        want_smtp=bool(job.get("options", {}).get("smtp")),
-        url=job.get("source", {}).get("url"),
-    )
+    try:
+        _gate(
+            settings,
+            kind=kind,
+            want_smtp=bool(job.get("options", {}).get("smtp")),
+            url=job.get("source", {}).get("url"),
+        )
+    except IngestGateError as exc:
+        stage = str(job.get("stage") or "download")
+        mark_stage(job, directory, stage, "failed", error=str(exc))
+        job["note"] = str(exc)
+        save_status(job, directory)
+        return job
     lock = JobLock(settings)
     with lock.hold(job_id):
         try:
@@ -321,23 +331,26 @@ def resume_download(
             if force_quality == "draft":
                 return run_generate(settings, job, directory, quality="draft")
             if force_quality == "final":
-                job = run_generate(settings, job, directory, quality="final")
-                if job.get("stages", {}).get("generate", {}).get("status") != "done":
-                    return job
+                return run_generate(settings, job, directory, quality="final")
+            if force_quality == "assemble":
                 return run_finish(settings, job, directory)
             return _continue_generate(settings, job, directory)
         except JobCancelled:
             return mark_job_cancelled(settings, job_id)
-        except Exception:
+        except Exception as exc:
             _, failed = get_job(settings, job_id)
+            err = str(exc).split("\nTraceback")[0].strip() or "续跑中途异常退出"
             if failed.get("state") == "running":
                 failed["state"] = "failed"
-                failed["note"] = failed.get("note") or "续跑中途异常退出"
+                failed["note"] = failed.get("note") or err
+                save_status(failed, directory)
+            elif not str(failed.get("note") or "").strip() or str(failed.get("note")).lower() in {"failed", "running"}:
+                failed["note"] = err
                 save_status(failed, directory)
             send_mail(
                 settings.smtp,
-                subject=f"VRS 失败 {job_id}",
-                body=str(failed.get("note") or "续跑中途异常退出"),
+                subject=failure_mail_subject(failed, exc=exc),
+                body=failure_mail_body(failed, exc=exc, directory=directory),
             )
             return failed
 
@@ -370,19 +383,47 @@ def rerun_drafts(settings: Settings, job_id: str, clip_ids: list[str] | None = N
         gen["status"] = "pending"
         gen["error"] = None
         save_status(job, directory)
+    if str(job.get("state") or "").lower() == "done":
+        job["state"] = "paused"
+        job["note"] = "脚本已改，正在重新出试片"
+        save_status(job, directory)
     return resume_download(settings, job_id, force_quality="draft")
 
 
-def run_finals(settings: Settings, job_id: str) -> dict:
+def run_finals(settings: Settings, job_id: str, clip_ids: list[str] | None = None) -> dict:
     if settings.mode() == "mock":
         from vrs.mock import final_now as mock_final
 
-        return mock_final(settings, job_id)
+        return mock_final(settings, job_id, clip_ids)
     directory, job = get_job(settings, job_id)
     clips = _clips(directory)
-    if not clips or not quality_complete(directory, clips, "draft"):
+    if not clips:
+        raise IngestGateError("还没有片段，不能出成片")
+    wanted = [item for item in (clip_ids or []) if item]
+    path = job_generate_path(directory, job)
+    if wanted:
+        for clip_id in wanted:
+            (clip_output_dir(directory, path, "final") / f"{clip_id}.mp4").unlink(missing_ok=True)
+        (directory / "output" / path / "final.mp4").unlink(missing_ok=True)
+        if str(job.get("state") or "").lower() == "done":
+            job["state"] = "paused"
+            job["note"] = "正在更新各段成片"
+            save_status(job, directory)
+    elif not quality_complete(directory, clips, "draft"):
         raise IngestGateError("试片还没齐，不能出成片")
     return resume_download(settings, job_id, force_quality="final")
+
+
+def run_assemble(settings: Settings, job_id: str) -> dict:
+    if settings.mode() == "mock":
+        from vrs.mock import assemble_now as mock_assemble
+
+        return mock_assemble(settings, job_id)
+    directory, job = get_job(settings, job_id)
+    clips = _clips(directory)
+    if not clips or not quality_complete(directory, clips, "final"):
+        raise IngestGateError("各段成片还没齐，不能拼接")
+    return resume_download(settings, job_id, force_quality="assemble")
 
 
 def cancel_job(settings: Settings, job_id: str) -> dict:
@@ -397,7 +438,13 @@ def cancel_job(settings: Settings, job_id: str) -> dict:
     occ = JobLock(settings).occupied()
     if not occ or occ.get("job_id") != job_id:
         return mark_job_cancelled(settings, job_id)
+    directory, job = get_job(settings, job_id)
     job["note"] = "正在放弃…"
+    progress = job.get("understand_progress")
+    if isinstance(progress, dict):
+        progress = dict(progress)
+        progress["chip"] = "正在放弃"
+        job["understand_progress"] = progress
     save_status(job, directory)
     return job
 

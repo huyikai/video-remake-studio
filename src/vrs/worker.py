@@ -15,6 +15,17 @@ _lock = threading.Lock()
 _threads: dict[str, threading.Thread] = {}
 
 
+def _append_worker_log(settings: Settings, job_id: str, text: str) -> None:
+    try:
+        directory, _job = get_job(settings, job_id)
+    except FileNotFoundError:
+        return
+    path = directory / "logs" / "worker.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text.rstrip() + "\n")
+
+
 def _mark_failed(settings: Settings, job_id: str, message: str) -> None:
     try:
         directory, job = get_job(settings, job_id)
@@ -46,7 +57,8 @@ def spawn(settings: Settings, job_id: str, fn: Callable[[], Any]) -> None:
         except BusyError as exc:
             _mark_failed(settings, job_id, str(exc))
         except Exception as exc:  # noqa: BLE001
-            _mark_failed(settings, job_id, f"{exc}\n{traceback.format_exc()[-800:]}")
+            _append_worker_log(settings, job_id, traceback.format_exc())
+            _mark_failed(settings, job_id, str(exc) or "后台任务异常退出")
         finally:
             with _lock:
                 _threads.pop(job_id, None)

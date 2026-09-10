@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from vrs.asr import resolve_aligner_model, resolve_asr_model, transcribe_wav, transcript_stale
 from vrs.beats import run_beat_table, window_failed
+from vrs.cancel import JobCancelled, raise_if_cancelled
 from vrs.dialogue import (
     adjudicate_ocr_asr,
     finalize_transcript,
@@ -170,6 +172,122 @@ def _beats_complete(beats: dict[str, Any] | None, duration: float) -> bool:
     return all(b - a <= hop + 0.1 for a, b in zip(starts, starts[1:]))
 
 
+UNDERSTAND_STEPS: tuple[tuple[str, str], ...] = (
+    ("shots", "镜头检测"),
+    ("ocr", "画面文字"),
+    ("asr", "语音转写"),
+    ("dialogue", "口播与情绪"),
+    ("beats", "画面拍表"),
+    ("events", "事件归纳"),
+)
+
+
+def _opt_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def set_understand_progress(
+    job: dict[str, Any],
+    directory: Path,
+    *,
+    step: str,
+    wait: str | None = None,
+    window: int | None = None,
+    windows: int | None = None,
+    window_t0: float | None = None,
+    window_t1: float | None = None,
+    window_failed: int | None = None,
+    detail: str | None = None,
+    failed: bool = False,
+) -> None:
+    raise_if_cancelled(directory)
+    labels = dict(UNDERSTAND_STEPS)
+    if step not in labels:
+        step = "shots"
+    prev = job.get("understand_progress") if isinstance(job.get("understand_progress"), dict) else {}
+    started = prev.get("step_started_at") if prev.get("step") == step else None
+    if not started:
+        started = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    beat_window = _opt_int(window if window is not None else prev.get("window") if step == "beats" else None)
+    beat_windows = _opt_int(windows if windows is not None else prev.get("windows") if step == "beats" else None)
+    if step == "beats":
+        t0 = _opt_float(window_t0 if window_t0 is not None else prev.get("window_t0"))
+        t1 = _opt_float(window_t1 if window_t1 is not None else prev.get("window_t1"))
+        nfail = _opt_int(window_failed if window_failed is not None else prev.get("window_failed"))
+    else:
+        t0 = t1 = nfail = None
+        beat_window = beat_windows = None
+    ids = [item[0] for item in UNDERSTAND_STEPS]
+    idx = ids.index(step)
+    steps: list[dict[str, Any]] = []
+    for i, (sid, label) in enumerate(UNDERSTAND_STEPS):
+        if i < idx:
+            status = "done"
+        elif i == idx:
+            status = "failed" if failed else ("waiting" if wait else "active")
+        else:
+            status = "pending"
+        rec: dict[str, Any] = {"id": sid, "label": label, "status": status}
+        if sid == "beats" and beat_windows is not None:
+            rec["window"] = int(beat_window or 0)
+            rec["windows"] = int(beat_windows)
+            if t0 is not None:
+                rec["window_t0"] = t0
+            if t1 is not None:
+                rec["window_t1"] = t1
+            if nfail is not None:
+                rec["window_failed"] = nfail
+        steps.append(rec)
+    if failed:
+        chip = labels[step]
+        note = (detail or "").strip() or chip
+    elif wait == "text":
+        chip = "等待文本模型"
+        note = f"{chip}。{detail}" if detail else chip
+    elif wait == "visual":
+        chip = "等待视觉模型"
+        note = f"{chip}。{detail}" if detail else chip
+    elif wait == "env":
+        chip = "等待环境"
+        note = f"{chip}。{detail}" if detail else chip
+    elif step == "beats" and beat_windows is not None:
+        chip = f"拍表 {int(beat_window or 0)}/{int(beat_windows)}"
+        note = chip
+    else:
+        chip = labels[step]
+        note = chip
+    job["note"] = note
+    job["understand_progress"] = {
+        "step": step,
+        "chip": chip,
+        "wait": wait,
+        "detail": detail or "",
+        "window": int(beat_window or 0) if beat_windows is not None else None,
+        "windows": int(beat_windows) if beat_windows is not None else None,
+        "window_t0": t0,
+        "window_t1": t1,
+        "window_failed": nfail,
+        "step_started_at": started,
+        "steps": steps,
+    }
+    raise_if_cancelled(directory)
+    save_status(job, directory)
+
+
 def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> dict[str, Any]:
     if _events_done(directory):
         mark_stage(job, directory, "understand", "done")
@@ -181,19 +299,21 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
 
     missing = _missing_local(settings)
     if missing:
+        reason = "理解阶段等待本地依赖：" + "；".join(missing)
         mark_stage(job, directory, "understand", "waiting", error="；".join(missing))
         job["state"] = "paused"
-        job["note"] = "理解阶段等待本地依赖：" + "；".join(missing)
-        save_status(job, directory)
+        set_understand_progress(job, directory, step="shots", wait="env", detail=reason)
         return job
 
     mark_stage(job, directory, "understand", "running")
+    set_understand_progress(job, directory, step="shots")
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     log = directory / "logs" / "understand.log"
     video = _video_path(directory)
     try:
         probe = job.get("source", {}).get("probe") or probe_video(video)
         duration = float(probe["duration"])
+        raise_if_cancelled(directory)
 
         shots_path = directory / "shots.json"
         shots_doc = _load_json(shots_path)
@@ -204,6 +324,8 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
             _write_json(shots_path, shots_doc)
             _log(directory, f"shots {len(shots)}")
 
+        raise_if_cancelled(directory)
+        set_understand_progress(job, directory, step="ocr")
         ocr_path = directory / "ocr" / "ocr.json"
         ocr = _load_json(ocr_path)
         if not ocr:
@@ -211,6 +333,8 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
             _write_json(ocr_path, ocr)
             _log(directory, f"ocr items={len(ocr.get('items') or [])}")
 
+        raise_if_cancelled(directory)
+        set_understand_progress(job, directory, step="asr")
         wav = directory / "source" / "audio.wav"
         full_path = directory / "transcript.full.json"
         transcript_path = directory / "transcript.json"
@@ -249,13 +373,14 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
             for stale_path in (directory / "dialogue.json", directory / "cuts.json"):
                 stale_path.unlink(missing_ok=True)
         transcript = finalize_transcript(full or {}, ocr)
+        raise_if_cancelled(directory)
         if needs_ocr_asr_judge(transcript):
             ok_llm, llm_detail = llm_health(settings)
             if not ok_llm:
+                reason = f"转写已完成，等待文本 LLM 裁定 OCR/ASR。{llm_detail}"
                 mark_stage(job, directory, "understand", "waiting", error=llm_detail)
                 job["state"] = "paused"
-                job["note"] = f"转写已完成，等待文本 LLM 裁定 OCR/ASR。{llm_detail}"
-                save_status(job, directory)
+                set_understand_progress(job, directory, step="asr", wait="text", detail=reason)
                 return job
         transcript = adjudicate_ocr_asr(
             settings,
@@ -272,6 +397,8 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
             f"ocr条={n_fix} asr-extra={n_extra}",
         )
 
+        raise_if_cancelled(directory)
+        set_understand_progress(job, directory, step="dialogue")
         dialogue_path = directory / "dialogue.json"
         existing_dialogue = _load_json(dialogue_path)
         dialogue = merge_dialogue(transcript, ocr)
@@ -289,15 +416,16 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
         wav.unlink(missing_ok=True)
         n_emo = sum(1 for s in (dialogue.get("speech") or []) if s.get("vocal_emotion"))
         _log(directory, f"SER vocal_emotion tagged={n_emo}/{len(dialogue.get('speech') or [])}")
+        raise_if_cancelled(directory)
 
         beats = _load_json(directory / "beats.json")
         if not _beats_complete(beats, duration):
             ok, detail = vl_health(settings)
             if not ok:
+                reason = f"口播已完成，等待 8B 静帧拍表。{detail}"
                 mark_stage(job, directory, "understand", "waiting", error=detail)
                 job["state"] = "paused"
-                job["note"] = f"口播已完成，等待 8B 静帧拍表。{detail}"
-                save_status(job, directory)
+                set_understand_progress(job, directory, step="beats", wait="visual", detail=reason)
                 return job
             _log(directory, "开始静帧拍表")
             beats = run_beat_table(
@@ -307,6 +435,16 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
                 duration=duration,
                 dialogue=dialogue,
                 log_path=log,
+                on_window=lambda done, total, t0=None, t1=None, failed=0: set_understand_progress(
+                    job,
+                    directory,
+                    step="beats",
+                    window=done,
+                    windows=total,
+                    window_t0=t0,
+                    window_t1=t1,
+                    window_failed=failed,
+                ),
             )
             n_err = sum(1 for w in (beats.get("windows") or []) if window_failed(w))
             n_win = len(beats.get("windows") or [])
@@ -319,15 +457,17 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
 
         ok_llm, llm_detail = llm_health(settings)
         if not ok_llm:
+            reason = f"拍表已完成，等待文本 LLM。{llm_detail}"
             mark_stage(job, directory, "understand", "waiting", error=llm_detail)
             job["state"] = "paused"
-            job["note"] = f"拍表已完成，等待文本 LLM。{llm_detail}"
-            save_status(job, directory)
+            set_understand_progress(job, directory, step="events", wait="text", detail=reason)
             return job
 
         scene_doc = _load_json(directory / "scene_cuts.json") or {}
         scene = [float(x) for x in scene_doc.get("cuts") or []]
+        set_understand_progress(job, directory, step="events")
         _log(directory, "Pass A 拆事件")
+        raise_if_cancelled(directory)
         events = run_pass_a(
             settings,
             directory=directory,
@@ -364,15 +504,43 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
         job["note"] = "拍表与事件已完成；不跑复刻向 VL。脚本阶段尚未实现"
         save_status(job, directory)
         return job
+    except JobCancelled:
+        unload_vl()
+        unload_llm()
+        raise
     except UnderstandWaiting as exc:
         unload_vl()
+        prev = job.get("understand_progress") or {}
         mark_stage(job, directory, "understand", "waiting", error=str(exc))
         job["state"] = "paused"
-        job["note"] = str(exc)
-        save_status(job, directory)
+        set_understand_progress(
+            job,
+            directory,
+            step=str(prev.get("step") or "beats"),
+            wait="visual",
+            detail=str(exc),
+            window=prev.get("window"),
+            windows=prev.get("windows"),
+            window_t0=prev.get("window_t0"),
+            window_t1=prev.get("window_t1"),
+            window_failed=prev.get("window_failed"),
+        )
         return job
     except (UnderstandError, ProbeError, VLError, LLMError, RuntimeError) as exc:
         unload_vl()
         unload_llm()
+        prev = job.get("understand_progress") or {}
+        set_understand_progress(
+            job,
+            directory,
+            step=str(prev.get("step") or "shots"),
+            failed=True,
+            detail=str(exc),
+            window=prev.get("window"),
+            windows=prev.get("windows"),
+            window_t0=prev.get("window_t0"),
+            window_t1=prev.get("window_t1"),
+            window_failed=prev.get("window_failed"),
+        )
         mark_stage(job, directory, "understand", "failed", error=str(exc))
         raise

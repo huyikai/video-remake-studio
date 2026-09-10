@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from vrs.cancel import raise_if_cancelled
 from vrs.llmclient import LLMError, generate_text, llm_label, unload_llm
 from vrs.lock import atomic_write_json
 from vrs.settings import Settings
@@ -542,6 +543,7 @@ def _fmt_stats(stats: dict[str, Any]) -> str:
 
 def _ask_llm(settings: Settings, prompt: str, directory: Path) -> Any:
     """问一次文本 LLM，并把提示词与原文落盘，失败时也留证据。"""
+    raise_if_cancelled(directory)
     raw_path = directory / "logs" / "passa.raw.txt"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     last: Exception | None = None

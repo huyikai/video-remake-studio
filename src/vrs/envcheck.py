@@ -311,24 +311,22 @@ def collect_env(settings: Settings, *, stage: str = "idle") -> dict[str, Any]:
     live.append(_item("llm", llm_ok, llm_detail, layer="live", needed="llm" in needed))
 
     smtp = check_smtp(settings.smtp)
-    smtp_needed = smtp_enabled(settings.smtp)
-    live.append(
-        _item(
-            "smtp",
-            bool(smtp["ok"]),
-            str(smtp["detail"]),
-            layer="live",
-            needed=smtp_needed,
+    if smtp_enabled(settings.smtp):
+        live.append(
+            _item(
+                "smtp",
+                bool(smtp["ok"]),
+                str(smtp["detail"]),
+                layer="live",
+                needed=False,
+            )
         )
-    )
 
     gate_reasons: list[str] = []
     if not ffmpeg_ok:
         gate_reasons.append("缺少 ffmpeg")
     if not jobs_ok:
         gate_reasons.append("data/jobs 不可写")
-    if smtp_needed and not smtp["ok"]:
-        gate_reasons.append("SMTP 已启用但连接/登录失败；可关邮件后再新建")
 
     current_need = "无（空闲）" if stage == "idle" else "、".join(STAGE_NEEDS[stage]) or "无"
     idle_live = [item for item in live if item["id"] in {"comfy", "vl"} and not item["ok"]]

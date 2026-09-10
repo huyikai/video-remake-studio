@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from vrs.cancel import raise_if_cancelled
 from vrs.lock import atomic_write_json
 from vrs.media import extract_frame_at
 from vrs.probe import which_ffmpeg
@@ -343,6 +345,7 @@ def run_beat_table(
     duration: float,
     dialogue: dict[str, Any],
     log_path: Path,
+    on_window: Callable[[int, int, float | None, float | None, int], None] | None = None,
 ) -> dict[str, Any]:
     window = float(settings.default.get("beat_window") or WINDOW)
     hop = float(settings.default.get("beat_hop") or HOP)
@@ -364,10 +367,14 @@ def run_beat_table(
 
     starts = window_starts(duration, cuts, hop=hop)
     spans = [(s, min(_round(s + window), _round(duration))) for s in starts]
+    total = len(spans)
+    if on_window:
+        on_window(0, total, None, None, 0)
     needed: list[float] = []
     for start, end in spans:
         needed.extend(cell_times(start, end, step=step, cells=cells_n))
     needed = sorted(set(needed))
+    raise_if_cancelled(directory)
     frames = _ensure_frames(video, directory / "beats" / "frames", needed, log_path)
 
     beats_path = directory / "beats.json"
@@ -397,13 +404,21 @@ def run_beat_table(
             "windows": rows,
         }
 
+    def emit(done: int, t0: float | None = None, t1: float | None = None) -> None:
+        if on_window is None:
+            return
+        failed_n = sum(1 for item in rows if window_failed(item))
+        on_window(done, total, t0, t1, failed_n)
+
     for start, end in spans:
+        raise_if_cancelled(directory)
         key = (_round(start), _round(end))
         found = by_span.get(key)
         times = cell_times(start, end, step=step, cells=cells_n)
         if found and not window_failed(found):
             rows.append(found)
             prev = found
+            emit(len(rows), start, end)
             continue
         if found and found.get("error") and found.get("raw"):
             # 旧 raw 能重新解析出来就省一次 VL；解析不了说明那次输出本身是坏的
@@ -419,7 +434,9 @@ def run_beat_table(
                 found["must_open"] = flag_window(found, prev=prev, cuts=cuts, dialogue=dialogue)
                 rows.append(found)
                 prev = found
+                emit(len(rows), start, end)
                 continue
+        emit(len(rows), start, end)
         cell_paths = [frames[t] for t in times if t in frames]
         sdk = str(resolve_vl(settings).get("kind") or "") == CURSOR_SDK_KIND
         win: dict[str, Any] = {
@@ -489,6 +506,7 @@ def run_beat_table(
         win["must_open"] = flag_window(win, prev=prev, cuts=cuts, dialogue=dialogue)
         rows.append(win)
         prev = win
+        emit(len(rows), start, end)
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(
                 f"beat {start:.2f}-{end:.2f} adults={win.get('adults')} children={win.get('children')} "

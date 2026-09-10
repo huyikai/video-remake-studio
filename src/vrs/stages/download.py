@@ -227,7 +227,13 @@ def _media_ready(path: Path) -> bool:
 
 def _download_url(settings: Settings, job: dict[str, Any], directory: Path) -> None:
     from vrs.browser import needs_browser_cookies
-    from vrs.f2douyin import DouyinIngestError, download_douyin, is_douyin_url
+    from vrs.f2douyin import (
+        DouyinIngestError,
+        download_douyin,
+        is_douyin_auth_error,
+        is_douyin_url,
+        set_cookie_expired,
+    )
 
     url = job["source"].get("url")
     if not url:
@@ -244,10 +250,13 @@ def _download_url(settings: Settings, job: dict[str, Any], directory: Path) -> N
         try:
             meta = download_douyin(settings, url, directory / "source")
         except DouyinIngestError as exc:
+            if is_douyin_auth_error(exc):
+                set_cookie_expired(settings, True)
             raise DownloadError(str(exc)) from exc
         except Exception as exc:
             _append_log(directory, f"f2 douyin crash: {type(exc).__name__}: {exc}")
             raise DownloadError(f"抖音进料异常：{type(exc).__name__}: {exc}") from exc
+        set_cookie_expired(settings, False)
         _append_log(
             directory,
             f"f2 douyin aweme_id={meta.get('aweme_id')} author={meta.get('author')}",

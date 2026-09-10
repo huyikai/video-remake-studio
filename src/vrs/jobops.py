@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -141,11 +142,19 @@ def _write_prompt_files(
 
 
 def _after_save(settings: Settings, job: dict[str, Any], directory: Path) -> dict[str, Any]:
+    if str(job.get("state") or "").lower() == "done":
+        job["state"] = "paused"
+        job["note"] = "脚本已改，该段待重新出试片"
+        save_status(job, directory)
     if (job.get("stages") or {}).get("script", {}).get("status") != "done":
         audit = audit_job(directory)
         return {"ok": audit["ok"], "precheck": audit, "note": "脚本阶段未完成，只做静态检查"}
     try:
         job = run_precheck(settings, job, directory)
+        if str(job.get("state") or "").lower() == "done":
+            job["state"] = "paused"
+            job["note"] = "脚本已改，该段待重新出试片"
+            save_status(job, directory)
         audit = audit_job(directory)
         return {
             "ok": True,
@@ -368,9 +377,23 @@ def delete_job(settings: Settings, job_id: str) -> None:
 
 
 def settings_public(settings: Settings) -> dict[str, Any]:
+    from vrs.f2douyin import cookie_expired, cookie_ready
+
     smtp = settings.smtp or {}
     comfy = settings.providers.get("comfy") or {}
     vl = settings.providers.get("vl") or {}
+    cookie_ok, cookie_detail = cookie_ready(settings)
+    expired = bool(cookie_ok and cookie_expired(settings))
+    if not cookie_ok:
+        state = "missing"
+        status_label = "未配置"
+    elif expired:
+        state = "expired"
+        status_label = "登录已失效，需要重新导入"
+    else:
+        state = "ok"
+        status_label = cookie_detail
+    from_env = bool((os.environ.get("VRS_DOUYIN_COOKIE") or "").strip())
     return {
         "mode": settings.mode(),
         "mock_speed": settings.mock_speed(),
@@ -394,8 +417,24 @@ def settings_public(settings: Settings) -> dict[str, Any]:
         "smtp_enabled": bool(smtp.get("enabled")),
         "smtp_to": list(smtp.get("to") or []),
         "smtp_host": smtp.get("host") or "",
-        "smtp_has_password": bool(smtp.get("password")),
-        "smtp_hint": "密码和账号请改 config/smtp.local.yaml 或环境变量 VRS_SMTP_*，页面不回显。",
+        "smtp_user": str(smtp.get("user") or ""),
+        "smtp_has_password": bool(str(smtp.get("password") or "").strip()),
+        "smtp_password_from_env": bool((os.environ.get("VRS_SMTP_PASSWORD") or "").strip()),
+        "smtp_hint": "授权码只保存在本机 config/smtp.local.yaml，页面不回显。QQ 邮箱请用授权码，不是登录密码。开跑只检查是否已填邮箱和授权码，不登录服务器。通不通请用「发送测试」。",
+        "douyin_cookie_set": cookie_ok,
+        "douyin_cookie_from_env": from_env,
+        "douyin_cookie_expired": expired,
+        "douyin_cookie_state": state,
+        "douyin_cookie_status": status_label,
+        "douyin_cookie_hint": (
+            "网页读不了 douyin.com 标签页里的登录态。"
+            "未配置或登录失效时可以一键导入或粘贴；已配置时点「更换」。"
+            + (
+                "当前实际使用环境变量 VRS_DOUYIN_COOKIE，写入本机配置不会覆盖它，过期时请先清掉环境变量。"
+                if from_env
+                else ""
+            )
+        ),
         "t2va": t2va_defaults(settings),
         "t2va_workflows": [
             {"id": "video_minimax_h3_t2v_turbo.json", "label": "T2VA Turbo"},
@@ -404,8 +443,37 @@ def settings_public(settings: Settings) -> dict[str, Any]:
     }
 
 
+def _smtp_local_doc(settings: Settings) -> dict[str, Any]:
+    path = settings.root / "config" / "smtp.local.yaml"
+    if path.is_file():
+        loaded = load_yaml(path)
+        if isinstance(loaded, dict) and loaded:
+            return dict(loaded)
+    cfg = settings.smtp or {}
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "host": str(cfg.get("host") or "smtp.qq.com"),
+        "port": int(cfg.get("port") or 465),
+        "user": str(cfg.get("user") or ""),
+        "password": str(cfg.get("password") or ""),
+        "from_addr": str(cfg.get("from_addr") or ""),
+        "to": list(cfg.get("to") or []),
+        "security": str(cfg.get("security") or "ssl"),
+        "max_attachment_mb": cfg.get("max_attachment_mb") or 20,
+    }
+
+
+def _save_smtp_local(settings: Settings, doc: dict[str, Any]) -> None:
+    path = settings.root / "config" / "smtp.local.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(doc, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+
+
 def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
-    forbidden = {"password", "api_key", "cookie", "smtp_password"}
+    forbidden = {"password", "api_key", "cookie"}
     if any(k in body for k in forbidden):
         raise JobOpsError("密码类字段不能从页面提交")
     path = settings.root / "config" / "local.yaml"
@@ -466,16 +534,59 @@ def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
             smtp["to"] = [str(p).strip() for p in raw if str(p).strip()]
     if smtp:
         current["smtp"] = smtp
+    smtp_secret_keys = {"smtp_password", "smtp_user"}
+    if any(key in body and body[key] is not None for key in smtp_secret_keys):
+        smtp_doc = _smtp_local_doc(settings)
+        if body.get("smtp_enabled") is not None:
+            smtp_doc["enabled"] = bool(body["smtp_enabled"])
+        if smtp.get("to"):
+            smtp_doc["to"] = list(smtp["to"])
+        if "smtp_user" in body and body["smtp_user"] is not None:
+            user = str(body["smtp_user"]).strip()
+            smtp_doc["user"] = user
+            if user:
+                smtp_doc["from_addr"] = user
+        if "smtp_password" in body and body["smtp_password"] is not None:
+            smtp_doc["password"] = str(body["smtp_password"]).strip()
+        if not str(smtp_doc.get("user") or "").strip():
+            tos = [str(item).strip() for item in (smtp_doc.get("to") or []) if str(item).strip()]
+            if tos:
+                smtp_doc["user"] = tos[0]
+                smtp_doc["from_addr"] = str(smtp_doc.get("from_addr") or tos[0])
+        if not str(smtp_doc.get("host") or "").strip() or str(smtp_doc.get("host")) == "smtp.example.com":
+            smtp_doc["host"] = "smtp.qq.com"
+            smtp_doc["port"] = 465
+            smtp_doc["security"] = "ssl"
+        _save_smtp_local(settings, smtp_doc)
+    if "douyin_cookie" in body and body["douyin_cookie"] is not None:
+        cookie = str(body["douyin_cookie"]).strip()
+        if cookie and any(ord(ch) > 127 for ch in cookie):
+            raise JobOpsError("抖音 Cookie 含非 ASCII 字符，请从 Chrome 重新复制")
+        douyin = dict(current.get("douyin") or {})
+        douyin["cookie"] = cookie
+        current["douyin"] = douyin
+        runtime["douyin_cookie_status"] = "ok"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         yaml.safe_dump(current, allow_unicode=True, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
     )
-    if runtime:
-        runtime_path.parent.mkdir(parents=True, exist_ok=True)
-        runtime_path.write_text(
-            yaml.safe_dump(runtime, allow_unicode=True, sort_keys=False, default_flow_style=False),
-            encoding="utf-8",
-        )
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.write_text(
+        yaml.safe_dump(runtime, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
     settings.reload()
     return settings_public(settings)
+
+
+def import_douyin_cookie(settings: Settings, *, force_window: bool = False) -> dict[str, Any]:
+    from vrs.douyincookie import DouyinCookieError, grab_douyin_cookie
+
+    try:
+        cookie, source = grab_douyin_cookie(settings, force_window=force_window)
+    except DouyinCookieError as exc:
+        raise JobOpsError(str(exc)) from exc
+    public = patch_settings(settings, {"douyin_cookie": cookie})
+    public["douyin_cookie_imported_via"] = source
+    return public

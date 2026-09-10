@@ -84,6 +84,8 @@ class Settings:
         speed = runtime.get("mock_speed") or self.default.get("mock_speed") or "1x"
         self.default["mock_speed"] = str(speed) if str(speed) in {"0.25x", "1x", "4x"} else "1x"
         self.default["mock_faults"] = runtime.get("mock_faults") or self.default.get("mock_faults") or {}
+        cookie_status = str(runtime.get("douyin_cookie_status") or "ok").lower()
+        self.default["douyin_cookie_status"] = cookie_status if cookie_status in {"ok", "expired"} else "ok"
 
     def _apply_smtp_env(self) -> None:
 

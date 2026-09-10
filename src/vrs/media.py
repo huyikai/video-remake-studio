@@ -179,27 +179,34 @@ def burn_ass(video: Path, ass: Path, dest: Path, *, log_path: Path | None = None
     )
 
 
-def cut_clip(video: Path, dest: Path, t0: float, t1: float, *, log_path: Path | None = None) -> None:
+def cut_clip(
+    video: Path,
+    dest: Path,
+    t0: float,
+    t1: float,
+    *,
+    log_path: Path | None = None,
+    keep_audio: bool = False,
+) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     duration = max(0.05, t1 - t0)
-    run_ffmpeg(
-        [
-            "-ss",
-            f"{max(0.0, t0):.3f}",
-            "-i",
-            str(video),
-            "-t",
-            f"{duration:.3f}",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-an",
-            "-movflags",
-            "+faststart",
-            str(dest),
-        ],
-        log_path=log_path,
-    )
+    command = [
+        "-ss",
+        f"{max(0.0, t0):.3f}",
+        "-i",
+        str(video),
+        "-t",
+        f"{duration:.3f}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+    ]
+    if keep_audio:
+        command += ["-c:a", "aac"]
+    else:
+        command.append("-an")
+    command += ["-movflags", "+faststart", str(dest)]
+    run_ffmpeg(command, log_path=log_path)

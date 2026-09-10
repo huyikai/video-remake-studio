@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -689,6 +691,214 @@ def assemble_zh(doc: dict[str, Any], clip: dict[str, Any]) -> str:
     )
 
 
+_ZH_HEADINGS = {
+    "事件链": "event_chain",
+    "表演节拍": "beats",
+    "幅度": "amplitude",
+    "场景": "scene",
+    "环境音": "soundscape",
+    "待确认": "note",
+}
+_ZH_EMPTY = {"（没写）", "（无）", "（本段没有说话人）"}
+_MOCK_SPEEDS = {"0.25x": 0.25, "1x": 1.0, "4x": 4.0}
+
+
+def _zh_from_editor(text: str) -> dict[str, Any]:
+    """从中文编辑稿里抠出可写回 JSON 的字段。人物锁仍走 _preserve_locks，这里不改。"""
+    out: dict[str, Any] = {}
+    current: str | None = None
+    chunks: dict[str, list[str]] = {}
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if line.startswith("## "):
+            title = line[3:].split("（", 1)[0].strip()
+            current = _ZH_HEADINGS.get(title)
+            continue
+        if not current:
+            continue
+        chunks.setdefault(current, []).append(raw.rstrip())
+    for key, lines in chunks.items():
+        body = "\n".join(lines).strip()
+        if not body or body in _ZH_EMPTY:
+            continue
+        if key == "beats":
+            beats = []
+            for item in body.splitlines():
+                item = item.strip()
+                if item.startswith("- "):
+                    item = item[2:].strip()
+                elif item.startswith("-"):
+                    item = item[1:].strip()
+                if item and item not in _ZH_EMPTY:
+                    beats.append(item)
+            if beats:
+                out["beats"] = beats
+        else:
+            out[key] = body
+    return out
+
+
+def _mock_wait(settings: Settings) -> None:
+    speed = _MOCK_SPEEDS.get(settings.mock_speed(), 1.0)
+    time.sleep(max(0.05, 0.15 / speed))
+
+
+def _mock_fix_shots(shots: list[dict[str, Any]], seconds: float) -> list[dict[str, Any]]:
+    if not shots:
+        return [{"index": 1, "at": None, "text": ""}]
+    out = [dict(shot) for shot in shots]
+    out[0]["index"] = 1
+    out[0]["at"] = None
+    prev = 0.0
+    kept = [out[0]]
+    for i, shot in enumerate(out[1:], start=2):
+        try:
+            at = float(shot.get("at"))
+        except (TypeError, ValueError):
+            continue
+        if at - prev < MIN_SHOT or seconds - at < MIN_SHOT:
+            continue
+        shot["index"] = i
+        shot["at"] = at
+        kept.append(shot)
+        prev = at
+        break
+    for i, shot in enumerate(kept, start=1):
+        shot["index"] = i
+    return kept
+
+
+def _mock_lock_prefix(doc: dict[str, Any], speakers: list[dict[str, Any]]) -> str:
+    scene = str(doc.get("scene_lock") or "").strip() or (
+        "Scene lock: a clean studio with controlled soft light, neutral surfaces, and a steady camera."
+    )
+    if "scene lock" not in scene.lower():
+        scene = f"Scene lock: {scene}"
+    if speakers:
+        first = speakers[0]
+        ident = str(first.get("lock") or "").strip() or (
+            "Identity lock: an adult with a consistent face, hair, and layered clothing."
+        )
+        if "identity lock" not in ident.lower():
+            ident = f"Identity lock: {ident}"
+        voice = str(first.get("voice") or "").strip() or (
+            "Voice lock: adult Chinese speech, mid pitch, even rate."
+        )
+        if "voice lock" not in voice.lower():
+            voice = f"Voice lock: {voice}"
+        return f"{ident} {voice} {scene}"
+    return (
+        "Identity lock: no speaking characters, clear geometric subjects. "
+        f"{scene}"
+    )
+
+
+def _mock_with_dialogue(body: str, allowed: list[str], speakers: list[dict[str, Any]]) -> str:
+    text = str(body or "").strip()
+    sid = str((speakers[0].get("id") if speakers else "") or "S1")
+    tag = f"({sid})"
+    for line in allowed:
+        said = str(line or "").strip()
+        if not said:
+            continue
+        if said in text:
+            continue
+        text = f"{text} {tag} says <d>[Chinese] {said}</d> then holds still.".strip()
+    return text
+
+
+def _mock_rewrite_clip(
+    settings: Settings,
+    clip: dict[str, Any],
+    facts: dict[str, Any],
+    *,
+    path: str,
+    current: dict[str, Any],
+    edit: dict[str, Any],
+    log: Any,
+) -> tuple[dict[str, Any], str]:
+    """Mock 模式不调真实模型：在现有 JSON 上套中文改动，保证过机检。"""
+    _mock_wait(settings)
+    seconds = float(clip["h3_seconds"])
+    allowed = [s["text"] for s in facts["speech"]]
+    doc = copy.deepcopy(current) if isinstance(current, dict) else {}
+    zh = dict(doc.get("zh") or {})
+    parsed = _zh_from_editor(str(edit.get("script_zh") or ""))
+    zh.update(parsed)
+    requirement = str(edit.get("requirement") or "").strip()
+    if requirement:
+        prior = str(zh.get("note") or "").strip()
+        mark = f"Mock 已应用：{requirement[:80]}"
+        zh["note"] = f"{prior}；{mark}" if prior and prior not in _ZH_EMPTY else mark
+    zh.setdefault("event_chain", "画面出现→构图移动→稳定收束")
+    zh.setdefault("beats", ["开场建立构图", "中段构图移动", "结尾稳定收束"])
+    zh.setdefault("amplitude", "中等；动作连续；结尾稳定")
+    zh.setdefault("scene", "干净影棚，柔光，中性表面")
+    zh.setdefault("soundscape", "安静室内底噪，无对白")
+    doc["zh"] = zh
+    doc["style"] = "live-action photorealistic"
+    if not str(doc.get("scene_lock") or "").strip():
+        doc["scene_lock"] = (
+            "Scene lock: a clean studio with controlled soft light, neutral surfaces, and a steady camera."
+        )
+    doc["non_diegetic_music"] = "N/A"
+    if not str(doc.get("overall_soundscape") or "").strip():
+        doc["overall_soundscape"] = (
+            "A quiet studio room tone with a soft electronic movement and no spoken dialogue."
+        )
+    speakers = list(doc.get("speakers") or [])
+    if allowed and not speakers:
+        speakers = [
+            {
+                "id": "S1",
+                "lock": "Identity lock: an adult with a consistent face, hair, and layered clothing.",
+                "voice": "Voice lock: adult Chinese speech, mid pitch, even rate.",
+                "zh": "说话人",
+            }
+        ]
+    doc["speakers"] = speakers
+    shots = _mock_fix_shots(list(doc.get("shots") or []), seconds)
+    body = str(shots[0].get("text") or "")
+    low = body.lower()
+    prefix = _mock_lock_prefix(doc, speakers)
+    if "identity lock" not in low or "scene lock" not in low or (speakers and "voice lock" not in low):
+        body = f"{prefix} {body}".strip()
+    if "mock rewrite" not in low:
+        body = f"{body} Mock rewrite keeps the same blocking while the composition settles.".strip()
+    shots[0]["text"] = _mock_with_dialogue(body, allowed, speakers)
+    doc["shots"] = shots
+    doc["clip_id"] = clip["id"]
+    doc["generate_path"] = path
+    if isinstance(current, dict):
+        _preserve_locks(current, doc)
+    txt = assemble_txt(doc, clip, path)
+    errors = (
+        check_clip(doc, seconds, allowed)
+        + check_header(clip["id"], txt, seconds)
+        + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
+    )
+    if errors:
+        shots = [{"index": 1, "at": None, "text": ""}]
+        body = (
+            f"{prefix} Mock rewrite keeps the same blocking while the composition settles."
+        )
+        shots[0]["text"] = _mock_with_dialogue(body, allowed, speakers)
+        doc["shots"] = shots
+        txt = assemble_txt(doc, clip, path)
+        errors = (
+            check_clip(doc, seconds, allowed)
+            + check_header(clip["id"], txt, seconds)
+            + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
+        )
+    if errors:
+        raise PassBError(f"{clip['id']} mock 改写未过检：{errors[0]}")
+    doc["writer_rev"] = WRITER_REV
+    doc["source_t0"] = float(clip["t0"])
+    doc["source_t1"] = float(clip["t1"])
+    log(f"  {clip['id']} mock 改写过检（未调用真实模型）")
+    return doc, txt
+
+
 def _preserve_locks(current: dict[str, Any], new: dict[str, Any]) -> None:
     """改写后强制复用旧的身份锁，避免同一人物换脸、跨段外观不一致。"""
     old = {str(s.get("id")): s for s in (current.get("speakers") or [])}
@@ -829,6 +1039,10 @@ def rewrite_clip(
     log: Any,
 ) -> tuple[dict[str, Any], str]:
     """按中文诉求改写一条，走同一套机检；失败抛 PassBError，不改盘。"""
+    if settings.mode() == "mock":
+        return _mock_rewrite_clip(
+            settings, clip, facts, path=path, current=current, edit=edit, log=log
+        )
     seconds = float(clip["h3_seconds"])
     allowed = [s["text"] for s in facts["speech"]]
     errors: list[str] = []
