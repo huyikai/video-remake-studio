@@ -203,8 +203,63 @@ export default function SettingsPage({ onClose }: Props) {
                 </SelectContent>
               </Select>
             </div>
-            {form.mode === "mock" ? <div className="mt-4 space-y-3 border-t border-line/60 pt-4"><label className="block text-muted">模拟速度<Select value={form.mock_speed} onValueChange={(v) => set("mock_speed", v as SettingsView["mock_speed"])}><SelectTrigger className="mt-1 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0.25x">0.25x</SelectItem><SelectItem value="1x">1x</SelectItem><SelectItem value="4x">4x</SelectItem></SelectContent></Select></label><label className="block text-muted">故障场景 JSON<textarea className="mt-1 h-20 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text" value={faultText} onChange={(e) => setFaultText(e.target.value)} /></label><p className="text-xs text-muted">示例：{"{\"generate\":{\"clip_id\":\"h3_01\",\"count\":1,\"type\":\"timeout\"}}"}</p></div> : null}
+            {form.mode === "mock" ? <div className="mt-4 space-y-3 border-t border-line/60 pt-4"><label className="block text-sm text-text">模拟速度<Select value={form.mock_speed} onValueChange={(v) => set("mock_speed", v as SettingsView["mock_speed"])}><SelectTrigger className="mt-1 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0.25x">0.25x</SelectItem><SelectItem value="1x">1x</SelectItem><SelectItem value="4x">4x</SelectItem></SelectContent></Select></label><label className="block text-sm text-text">故障场景 JSON<textarea className="mt-1 h-20 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text" value={faultText} onChange={(e) => setFaultText(e.target.value)} /></label><p className="text-xs text-muted">示例：{"{\"generate\":{\"clip_id\":\"h3_01\",\"count\":1,\"type\":\"timeout\"}}"}</p></div> : null}
           </section>
+            {form.t2va ? (
+          <section className="rounded-lg border border-line p-4">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">T2VA 默认</p>
+            <h3 className="mt-1 font-semibold">试片 / 成片</h3>
+            <p className="mt-1 text-xs text-muted">只作用于之后新建的 T2VA 任务。T2VA Turbo、I2VA、Ref2VA 仍走 yaml。创建时写入任务快照。</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              {(["draft", "final"] as const).map((quality) => (
+                <div key={quality} className="space-y-2">
+                  <p className="text-sm text-text">{quality === "draft" ? "试片" : "成片"}</p>
+                  <label className="block text-sm text-text">
+                    工作流
+                    <Select
+                      value={form.t2va[quality].workflow}
+                      onValueChange={(v) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], workflow: v } })}
+                    >
+                      <SelectTrigger className="mt-1 w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(form.t2va_workflows || []).map((item) => (
+                          <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="block text-sm text-text">
+                    MP
+                    <div className="mt-1 flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-full rounded border border-line bg-surface p-2 text-text"
+                        value={form.t2va[quality].megapixels}
+                        onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], megapixels: Number(e.target.value) } })}
+                      />
+                      <span className="text-xs text-muted">MP</span>
+                    </div>
+                  </label>
+                  <label className="block text-sm text-text">
+                    步数
+                    <div className="mt-1 flex items-center gap-2">
+                      <input
+                        type="number"
+                        className="w-full rounded border border-line bg-surface p-2 text-text"
+                        value={form.t2va[quality].steps}
+                        onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], steps: Number(e.target.value) } })}
+                      />
+                      <span className="text-xs text-muted">步</span>
+                    </div>
+                  </label>
+                </div>
+              ))}
+            </div>
+          </section>
+            ) : null}
           <section className="rounded-lg border border-line p-4">
             <p className="text-xs uppercase tracking-[0.16em] text-muted">抖音进料</p>
             <h3 className="mt-1 font-semibold">登录 Cookie</h3>
@@ -214,7 +269,7 @@ export default function SettingsPage({ onClose }: Props) {
             {form.douyin_cookie_from_env ? <p className="mt-1 text-xs text-warn">当前实际使用环境变量 VRS_DOUYIN_COOKIE。本机配置改了也不生效，过期时请先清掉该变量。</p> : null}
             {form.douyin_cookie_set && !form.douyin_cookie_expired && !replaceOpen ? (
               <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" className="rounded border border-line px-3 py-1.5 text-sm text-muted" onClick={() => setReplaceOpen(true)}>
+                <button type="button" className="rounded border border-line px-3 py-1.5 text-sm text-muted hover:text-text" onClick={() => setReplaceOpen(true)}>
                   更换
                 </button>
                 {!form.douyin_cookie_from_env ? (
@@ -244,19 +299,19 @@ export default function SettingsPage({ onClose }: Props) {
                   </button>
                   <button
                     type="button"
-                    className="rounded border border-line px-3 py-1.5 text-sm text-muted disabled:opacity-40"
+                    className="rounded border border-line px-3 py-1.5 text-sm text-muted hover:text-text disabled:opacity-40"
                     disabled={importing || saving}
                     onClick={() => void importCookie(true)}
                   >
                     打开登录窗口
                   </button>
                   {form.douyin_cookie_set && !form.douyin_cookie_expired ? (
-                    <button type="button" className="rounded border border-line px-3 py-1.5 text-sm text-muted" onClick={() => { setReplaceOpen(false); setCookieDraft(""); setClearCookie(false); }}>
+                    <button type="button" className="rounded border border-line px-3 py-1.5 text-sm text-muted hover:text-text" onClick={() => { setReplaceOpen(false); setCookieDraft(""); setClearCookie(false); }}>
                       取消
                     </button>
                   ) : null}
                 </div>
-                <label className="mt-3 block text-muted">
+                <label className="mt-3 block text-sm text-text">
                   {form.douyin_cookie_set ? "粘贴新 Cookie（留空则不改）" : "粘贴 Cookie"}
                   <textarea
                     className="mt-1 h-24 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text"
@@ -274,160 +329,150 @@ export default function SettingsPage({ onClose }: Props) {
             )}
             <p className="mt-2 text-xs text-muted">{form.douyin_cookie_hint}</p>
           </section>
-          <label className="block text-muted">
-            Comfy base_url
-            <input className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.comfy_base_url} onChange={(e) => set("comfy_base_url", e.target.value)} />
-          </label>
-          <label className="block text-muted">
-            显存档 gpu_memory_gb
-            <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.gpu_memory_gb} onChange={(e) => set("gpu_memory_gb", Number(e.target.value))} />
-          </label>
-          <label className="block text-muted">
-            看门狗 hang_timeout_sec
-            <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.hang_timeout_sec} onChange={(e) => set("hang_timeout_sec", Number(e.target.value))} />
-          </label>
-          <label className="block text-muted">
-            单段超时 generate_clip_timeout_sec
-            <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.generate_clip_timeout_sec} onChange={(e) => set("generate_clip_timeout_sec", Number(e.target.value))} />
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block text-muted">
-              clip 重启上限
-              <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.clip_restart_max} onChange={(e) => set("clip_restart_max", Number(e.target.value))} />
-            </label>
-            <label className="block text-muted">
-              job 重启上限
-              <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.job_restart_max} onChange={(e) => set("job_restart_max", Number(e.target.value))} />
-            </label>
-          </div>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={form.smtp_enabled} onChange={(e) => set("smtp_enabled", e.target.checked)} />
-            启用 SMTP 邮件提醒
-          </label>
-          <label className="block text-muted">
-            收件人（逗号分隔）
-            <input
-              className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
-              value={form.smtp_to.join(", ")}
-              onChange={(e) => set("smtp_to", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
-            />
-          </label>
-          <label className="block text-muted">
-            发件账号
-            <input
-              className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
-              value={form.smtp_user || ""}
-              autoComplete="username"
-              placeholder="例如 QQ 邮箱地址"
-              onChange={(e) => set("smtp_user", e.target.value)}
-            />
-          </label>
-          <label className="block text-muted">
-            {form.smtp_has_password ? "新授权码（留空则不改）" : "授权码"}
-            <input
-              type="password"
-              className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
-              value={smtpAuth}
-              autoComplete="new-password"
-              spellCheck={false}
-              placeholder={form.smtp_has_password ? "已保存，不会回显" : "QQ 邮箱授权码，不是登录密码"}
-              onChange={(e) => {
-                setSmtpAuth(e.target.value);
-                setClearSmtpAuth(false);
-              }}
-            />
-          </label>
-          {form.smtp_has_password && !form.smtp_password_from_env ? (
-            <button
-              type="button"
-              className="text-xs text-bad hover:underline"
-              onClick={() => {
-                setSmtpAuth("");
-                setClearSmtpAuth(true);
-              }}
-            >
-              {clearSmtpAuth ? "将在保存时清除授权码" : "清除授权码"}
-            </button>
-          ) : null}
-          {form.smtp_password_from_env ? <p className="text-xs text-warn">当前实际使用环境变量 VRS_SMTP_PASSWORD。本机配置改了也不生效，请先清掉该变量。</p> : null}
-          <p className="text-xs text-muted">
-            主机 {form.smtp_host || "未配置"} · {form.smtp_has_password ? "已配置授权码" : "未配置授权码"}
-            <br />
-            {form.smtp_hint}
-          </p>
-          {form.smtp_enabled && (!(form.smtp_user || "").trim() || !form.smtp_has_password) ? (
-            <p className="text-xs text-warn">启用了邮件但还缺邮箱或授权码。填齐后才能在勾选邮件的任务上开跑。</p>
-          ) : null}
-          <button
-            type="button"
-            className="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-40"
-            disabled={!form.smtp_enabled || !(form.smtp_user || "").trim() || !form.smtp_has_password || !(form.smtp_to || []).length || smtpTesting}
-            onClick={() => void testSmtp()}
-          >
-            {smtpTesting ? "发送中…" : "发送测试"}
-          </button>
-          {smtpTestMsg ? <p className={cn("text-xs", smtpTestOk ? "text-ok" : "text-bad")}>{smtpTestMsg}</p> : null}
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={form.esrgan} onChange={(e) => set("esrgan", e.target.checked)} />
-            RealESRGAN
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={form.ass_burn} onChange={(e) => set("ass_burn", e.target.checked)} />
-            烧 ASS
-          </label>
-            {form.t2va ? (
           <section className="rounded-lg border border-line p-4">
-            <p className="text-xs uppercase tracking-[0.16em] text-muted">T2VA 默认</p>
-            <h3 className="mt-1 font-semibold">试片 / 成片</h3>
-            <p className="mt-1 text-xs text-muted">只作用于之后新建的 T2VA 任务。T2VA Turbo、I2VA、Ref2VA 仍走 yaml。创建时写入任务快照。</p>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              {(["draft", "final"] as const).map((quality) => (
-                <div key={quality} className="space-y-2">
-                  <p className="text-sm text-text">{quality === "draft" ? "试片" : "成片"}</p>
-                  <label className="block text-muted">
-                    工作流
-                    <Select
-                      value={form.t2va[quality].workflow}
-                      onValueChange={(v) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], workflow: v } })}
-                    >
-                      <SelectTrigger className="mt-1 w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(form.t2va_workflows || []).map((item) => (
-                          <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <label className="block text-muted">
-                    MP
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
-                      value={form.t2va[quality].megapixels}
-                      onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], megapixels: Number(e.target.value) } })}
-                    />
-                  </label>
-                  <label className="block text-muted">
-                    步数
-                    <input
-                      type="number"
-                      className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
-                      value={form.t2va[quality].steps}
-                      onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], steps: Number(e.target.value) } })}
-                    />
-                  </label>
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">模型环境</p>
+            <h3 className="mt-1 font-semibold">Comfy / 超时 / 重启</h3>
+            <p className="mt-1 text-xs text-muted">ComfyUI 地址、显存档和任务超时。重启上限只针对单个 clip / job 内部的失败重试。</p>
+            <div className="mt-4 space-y-3">
+              <label className="block text-sm text-text">
+                Comfy base_url
+                <input className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.comfy_base_url} onChange={(e) => set("comfy_base_url", e.target.value)} />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-sm text-text">
+                  显存档 gpu_memory_gb
+                  <div className="mt-1 flex items-center gap-2">
+                    <input type="number" className="w-full rounded border border-line bg-surface p-2 text-text" value={form.gpu_memory_gb} onChange={(e) => set("gpu_memory_gb", Number(e.target.value))} />
+                    <span className="text-xs text-muted">GB</span>
+                  </div>
+                </label>
+                <label className="block text-sm text-text">
+                  看门狗 hang_timeout_sec
+                  <div className="mt-1 flex items-center gap-2">
+                    <input type="number" className="w-full rounded border border-line bg-surface p-2 text-text" value={form.hang_timeout_sec} onChange={(e) => set("hang_timeout_sec", Number(e.target.value))} />
+                    <span className="text-xs text-muted">秒</span>
+                  </div>
+                </label>
+              </div>
+              <label className="block text-sm text-text">
+                单段超时 generate_clip_timeout_sec
+                <div className="mt-1 flex items-center gap-2">
+                  <input type="number" className="w-full rounded border border-line bg-surface p-2 text-text" value={form.generate_clip_timeout_sec} onChange={(e) => set("generate_clip_timeout_sec", Number(e.target.value))} />
+                  <span className="text-xs text-muted">秒</span>
                 </div>
-              ))}
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-sm text-text">
+                  clip 重启上限
+                  <div className="mt-1 flex items-center gap-2">
+                    <input type="number" className="w-full rounded border border-line bg-surface p-2 text-text" value={form.clip_restart_max} onChange={(e) => set("clip_restart_max", Number(e.target.value))} />
+                    <span className="text-xs text-muted">次</span>
+                  </div>
+                </label>
+                <label className="block text-sm text-text">
+                  job 重启上限
+                  <div className="mt-1 flex items-center gap-2">
+                    <input type="number" className="w-full rounded border border-line bg-surface p-2 text-text" value={form.job_restart_max} onChange={(e) => set("job_restart_max", Number(e.target.value))} />
+                    <span className="text-xs text-muted">次</span>
+                  </div>
+                </label>
+              </div>
             </div>
           </section>
-            ) : null}
+          <section className="rounded-lg border border-line p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div><p className="text-xs uppercase tracking-[0.16em] text-muted">邮件提醒</p><h3 className="mt-1 font-semibold">SMTP</h3><p className="mt-1 text-xs text-muted">勾选后才能在新建任务时启用邮件通知。</p></div>
+              <label className="flex shrink-0 items-center gap-2 pt-1">
+                <input type="checkbox" checked={form.smtp_enabled} onChange={(e) => set("smtp_enabled", e.target.checked)} />
+                <span className="text-sm">启用</span>
+              </label>
+            </div>
+            <div className="mt-4 space-y-3 border-t border-line/60 pt-4">
+              <label className="block text-sm text-text">
+                收件人（逗号分隔）
+                <input
+                  className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+                  value={form.smtp_to.join(", ")}
+                  onChange={(e) => set("smtp_to", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-sm text-text">
+                  发件账号
+                  <input
+                    className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+                    value={form.smtp_user || ""}
+                    autoComplete="username"
+                    placeholder="例如 QQ 邮箱地址"
+                    onChange={(e) => set("smtp_user", e.target.value)}
+                  />
+                </label>
+                <label className="block text-sm text-text">
+                  {form.smtp_has_password ? "新授权码（留空则不改）" : "授权码"}
+                  <input
+                    type="password"
+                    className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+                    value={smtpAuth}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    placeholder={form.smtp_has_password ? "已保存，不会回显" : "QQ 邮箱授权码，不是登录密码"}
+                    onChange={(e) => {
+                      setSmtpAuth(e.target.value);
+                      setClearSmtpAuth(false);
+                    }}
+                  />
+                </label>
+              </div>
+              {form.smtp_has_password && !form.smtp_password_from_env ? (
+                <button
+                  type="button"
+                  className="text-xs text-bad hover:underline"
+                  onClick={() => {
+                    setSmtpAuth("");
+                    setClearSmtpAuth(true);
+                  }}
+                >
+                  {clearSmtpAuth ? "将在保存时清除授权码" : "清除授权码"}
+                </button>
+              ) : null}
+              {form.smtp_password_from_env ? <p className="text-xs text-warn">当前实际使用环境变量 VRS_SMTP_PASSWORD。本机配置改了也不生效，请先清掉该变量。</p> : null}
+              <p className="text-xs text-muted">
+                主机 {form.smtp_host || "未配置"} · {form.smtp_has_password ? "已配置授权码" : "未配置授权码"}
+                <br />
+                {form.smtp_hint}
+              </p>
+              {form.smtp_enabled && (!(form.smtp_user || "").trim() || !form.smtp_has_password) ? (
+                <p className="text-xs text-warn">启用了邮件但还缺邮箱或授权码。填齐后才能在勾选邮件的任务上开跑。</p>
+              ) : null}
+              <button
+                type="button"
+                className="rounded-md border border-line px-3 py-1.5 text-sm hover:border-tungsten/60 hover:text-text disabled:opacity-40"
+                disabled={!form.smtp_enabled || !(form.smtp_user || "").trim() || !form.smtp_has_password || !(form.smtp_to || []).length || smtpTesting}
+                onClick={() => void testSmtp()}
+              >
+                {smtpTesting ? "发送中…" : "发送测试"}
+              </button>
+              {smtpTestMsg ? <p className={cn("text-xs", smtpTestOk ? "text-ok" : "text-bad")}>{smtpTestMsg}</p> : null}
+            </div>
+          </section>
+          <section className="rounded-lg border border-line p-4">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">成片后处理</p>
+            <h3 className="mt-1 font-semibold">画质 / 字幕</h3>
+            <div className="mt-4 space-y-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.esrgan} onChange={(e) => set("esrgan", e.target.checked)} />
+                RealESRGAN 超分
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={form.ass_burn} onChange={(e) => set("ass_burn", e.target.checked)} />
+                烧 ASS 字幕
+              </label>
+            </div>
+          </section>
           {msg ? <p className={msgWarn ? "text-warn" : "text-ok"}>{msg}</p> : null}
           {err ? <p className="text-bad">{err}</p> : null}
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" className="px-3 py-2 text-muted" onClick={onClose}>
+            <button type="button" className="px-3 py-2 text-sm text-muted hover:text-text" onClick={onClose}>
               取消
             </button>
             <button type="button" className="rounded bg-tungsten px-4 py-2 text-ink disabled:opacity-40" disabled={saving} onClick={() => { if (form.mode === "real") { setConfirmRealMode(true); } else { void save(); } }}>
