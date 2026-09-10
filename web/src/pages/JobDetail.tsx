@@ -773,11 +773,11 @@ export default function JobDetail() {
                 <span className={cn("font-medium", stageTone(job.state))}>{jobStateLabel(job.state)}</span>
               )}
               {dirty.length ? <span className="text-warn">未应用 {dirty.length}</span> : null}
-              {job.running ? <button type="button" className="text-tungsten hover:underline" onClick={() => setDetail("progress")}>处理中</button> : null}
+              {job.running ? <button type="button" className="rounded px-2 py-0.5 text-tungsten hover:bg-tungsten/10" onClick={() => setDetail("progress")}>处理中</button> : null}
               {err ? <span className="max-w-xs truncate text-bad" title={err}>{err}</span> : null}
               {msg ? <span className="max-w-xs truncate text-ok" title={msg}>{msg}</span> : null}
               {job.running ? (
-                <button type="button" className="text-bad hover:underline" onClick={() => setConfirmAbandon(true)}>放弃</button>
+                <button type="button" className="rounded px-2 py-0.5 text-bad hover:bg-bad/10" onClick={() => setConfirmAbandon(true)}>放弃</button>
               ) : null}
             </div>
           </div>
@@ -789,7 +789,7 @@ export default function JobDetail() {
               const isCurrent = progressStage === stage;
               const isSelected = shownStage === stage;
               return (
-                <button key={stage} type="button" onClick={() => selectStage(stage)} className={cn("flex h-9 min-w-36 flex-1 items-center justify-between gap-3 rounded-md border px-3 text-left whitespace-nowrap", isSelected ? "border-tungsten bg-tungsten/10" : "border-line bg-transparent hover:border-tungsten/40")}>
+                <button key={stage} type="button" onClick={() => selectStage(stage)} className={cn("flex h-9 min-w-36 flex-1 items-center justify-between gap-3 rounded-md border px-3 text-left whitespace-nowrap", isSelected ? "border-tungsten bg-tungsten/10" : isCurrent ? "border-line bg-transparent hover:border-tungsten/40" : "border-line/60 bg-transparent opacity-50 hover:border-line hover:opacity-80")}>
                   <span className="flex min-w-0 items-center gap-2">
                     <span className={cn("size-1.5 shrink-0 rounded-full", isSelected ? "bg-tungsten" : "bg-line")} />
                     <span className={cn("truncate text-sm", isSelected && "font-medium")}>{STAGE_LABEL[stage]}</span>
@@ -808,8 +808,10 @@ export default function JobDetail() {
       {job.need_aspect_confirm ? (
         <div className="shrink-0 border-b border-warn/40 bg-warn/10 px-4 py-2 text-sm text-warn">
           原片比例为 {job.source_aspect}，请选择输出比例。
-          <button className="ml-3 text-tungsten hover:underline" onClick={() => api.aspect(id, false).then(() => api.resume(id)).then(refresh)}>保持 16:9</button>
-          <button className="ml-3 text-tungsten hover:underline" onClick={() => api.aspect(id, true).then(() => api.resume(id)).then(refresh)}>跟随原片</button>
+          <div className="ml-2 inline-flex gap-1">
+            <button type="button" className="rounded px-2 py-0.5 text-tungsten hover:bg-tungsten/10" onClick={() => api.aspect(id, false).then(() => api.resume(id)).then(refresh)}>保持 16:9</button>
+            <button type="button" className="rounded px-2 py-0.5 text-tungsten hover:bg-tungsten/10" onClick={() => api.aspect(id, true).then(() => api.resume(id)).then(refresh)}>跟随原片</button>
+          </div>
         </div>
       ) : null}
 
@@ -835,7 +837,16 @@ export default function JobDetail() {
                 </button>
               );
             })}
-            {!clips.length ? <p className="rounded-lg border border-dashed border-line p-3 text-xs leading-5 text-muted">脚本完成后，片段会出现在这里。</p> : null}
+            {!clips.length ? (
+              <div className="rounded-lg border border-dashed border-line p-3 text-xs leading-5 text-muted">
+                <p>脚本完成后，片段会出现在这里。</p>
+                {shownStage !== "script" ? (
+                  <button type="button" className="mt-2 rounded px-2 py-0.5 text-tungsten hover:bg-tungsten/10" onClick={() => selectStage("script")}>去「脚本」页触发分镜</button>
+                ) : (
+                  <p className="mt-2 text-muted">先在右侧生成脚本，脚本完成后再回来。</p>
+                )}
+              </div>
+            ) : null}
           </div>
         </aside>
 
@@ -844,12 +855,12 @@ export default function JobDetail() {
           <div className="mb-2 flex min-h-7 shrink-0 items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2 text-sm">
               <h2 className="shrink-0 font-medium">{STAGE_LABEL[shownStage]}</h2>
+              {unsaved ? <span className="shrink-0 rounded border border-warn/40 bg-warn/10 px-2 py-0.5 text-[11px] font-medium text-warn">未保存</span> : null}
               {current && shownStage === "finish" ? <span className="shrink-0 font-mono text-xs text-muted">整片定位 {current.id}</span> : null}
               {current && shownStage !== "finish" ? <span className="shrink-0 font-mono text-xs text-muted">{shownStage === "draft" || shownStage === "clips" ? `${current.id} 监视区` : current.id}</span> : null}
               {jobNoteText(job.note) ? <p className="min-w-0 truncate text-xs text-muted">{jobNoteText(job.note)}</p> : null}
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {unsaved ? <span className="text-xs text-warn">有未保存修改</span> : null}
               {batchInFooter ? batchMenu : null}
               {(() => {
                 const action = primaryActionFromJob(job);
