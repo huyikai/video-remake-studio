@@ -220,10 +220,7 @@ export default function JobList() {
     <div className="grid h-full min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(19rem,25rem)_minmax(0,1fr)_minmax(17rem,22rem)] lg:overflow-hidden">
       <aside className="min-h-0 overflow-y-auto border-r border-line bg-panel/60 p-4">
         <div className="mb-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.18em] text-muted">工作空间</p>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">任务列表</h1>
-          </div>
+          <h1 className="text-2xl font-semibold tracking-tight">任务列表</h1>
           <button type="button" onClick={() => setOpen("new")} className="rounded-md bg-tungsten px-3 py-2 text-sm font-medium text-ink hover:opacity-90">
             新建
           </button>
@@ -319,8 +316,7 @@ export default function JobList() {
       <section ref={overviewRef} className="min-h-0 overflow-y-auto p-6">
         {active ? (
           <div className="mx-auto max-w-3xl">
-            <p className="text-xs uppercase tracking-[0.18em] text-muted">当前任务</p>
-            <h2 className="mt-2 text-3xl font-semibold tracking-tight">{STAGE[active.stage] || active.stage}</h2>
+            <h2 className="text-3xl font-semibold tracking-tight">{STAGE[active.stage] || active.stage}</h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-muted">{active.note || "选择左侧任务查看详细进度"}</p>
             <div className="mt-8 rounded-xl border border-line bg-surface p-5">
               <div className="flex items-center justify-between text-sm"><span>任务进度</span><span className={cn("rounded-md px-2 py-1 text-xs font-medium", active.state === "done" ? "bg-ok/20 text-ok" : "bg-panel text-tungsten")}>{active.state === "done" ? "已完成" : (active.sub_progress ? `${STAGE[active.stage] || active.stage} · ${active.sub_progress}` : (STAGE[active.stage] || active.stage))}</span></div>
