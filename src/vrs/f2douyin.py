@@ -12,7 +12,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from vrs.settings import Settings
+from vrs.settings import Settings, load_yaml
+
+import yaml
 
 VIDEO_TYPES = {0, 4, 55, 61, 109, 201}
 TYPE_LABELS = {
@@ -51,7 +53,42 @@ def cookie_ready(settings: Settings) -> tuple[bool, str]:
         return False, str(exc)
     if cookie:
         return True, f"已配置（{len(cookie)} 字符）"
-    return False, "缺少 VRS_DOUYIN_COOKIE 或 config/local.yaml 的 douyin.cookie"
+    return False, "未配置抖音 Cookie：请到设置里粘贴，或设环境变量 VRS_DOUYIN_COOKIE"
+
+
+_AUTH_MARKERS = (
+    "需要登录 Cookie",
+    "未配置抖音 Cookie",
+    "Cookie 过期",
+    "Cookie 失效",
+    "Cookie 无效",
+    "VRS_DOUYIN_COOKIE",
+)
+
+
+def is_douyin_auth_error(exc: Any) -> bool:
+    text = str(exc or "")
+    return any(marker in text for marker in _AUTH_MARKERS)
+
+
+def cookie_expired(settings: Settings) -> bool:
+    status = str(settings.default.get("douyin_cookie_status") or "ok").lower()
+    if status == "expired":
+        return True
+    runtime = load_yaml(settings.root / "data" / "runtime.yaml")
+    return str(runtime.get("douyin_cookie_status") or "").lower() == "expired"
+
+
+def set_cookie_expired(settings: Settings, expired: bool) -> None:
+    path = settings.root / "data" / "runtime.yaml"
+    runtime = load_yaml(path) if path.is_file() else {}
+    runtime["douyin_cookie_status"] = "expired" if expired else "ok"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(runtime, allow_unicode=True, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
+    )
+    settings.reload()
 
 
 def _kwargs(cookie: str, settings: Settings) -> dict[str, Any]:
@@ -283,8 +320,7 @@ async def _ingest(url: str, dest_dir: Path, settings: Settings) -> dict[str, Any
     cookie = resolve_cookie(settings)
     if not cookie:
         raise DouyinIngestError(
-            "抖音下载需要登录 Cookie：设环境变量 VRS_DOUYIN_COOKIE，"
-            "或写入 config/local.yaml 的 douyin.cookie（不要提交到 git）"
+            "抖音下载需要登录 Cookie：请到设置里粘贴，或设环境变量 VRS_DOUYIN_COOKIE"
         )
     kw = _kwargs(cookie, settings)
     dest_dir = dest_dir.resolve()
@@ -304,15 +340,17 @@ async def _ingest(url: str, dest_dir: Path, settings: Settings) -> dict[str, Any
         video = await handler.fetch_one_video(aweme_id)
     except Exception as exc:  # noqa: BLE001
         text = str(exc)
-        if "动图" in text or "nickname" in text.lower():
-            raise _not_a_video("动图接口异常或 Cookie 无效") from exc
+        if "nickname" in text.lower():
+            raise DouyinIngestError("抖音详情失败。Cookie 过期或失效。") from exc
+        if "动图" in text:
+            raise _not_a_video("动图") from exc
         raise DouyinIngestError(
-            "抖音详情失败。Cookie 过期或失效时请从已登录 Chrome 重新复制。"
+            "抖音详情失败。Cookie 过期或失效时请重新导入登录态。"
             f" 原始错误：{exc}"
         ) from exc
 
     if video.nickname is None:
-        raise _not_a_video("动图接口异常或 Cookie 无效")
+        raise DouyinIngestError("抖音详情失败。Cookie 过期或失效。")
     aweme_type = _as_int(video.aweme_type)
     if aweme_type is None:
         aweme_type = video.aweme_type
