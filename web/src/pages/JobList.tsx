@@ -286,7 +286,7 @@ export default function JobList() {
             return (
               <div
                 key={job.id}
-                className={cn("flex gap-2 rounded-lg border border-line bg-surface p-3 hover:border-tungsten/60", active?.id === job.id && "border-tungsten/70 bg-tungsten/10")}
+                className={cn("flex gap-2 rounded-lg border border-line bg-surface p-3 hover:border-tungsten/60", active?.id === job.id && "border-tungsten/70 bg-tungsten/10 dark:border-tungsten/40 dark:bg-tungsten/[0.08] dark:ring-1 dark:ring-tungsten/30 dark:ring-inset")}
               >
                 <JobCheckbox
                   checked={isChecked}
@@ -310,7 +310,6 @@ export default function JobList() {
               </div>
             );
           })}
-          {!jobs.length ? <p className="rounded-lg border border-dashed border-line p-5 text-sm text-muted">还没有任务。点击「新建」开始处理视频。</p> : null}
         </div>
       </aside>
       <section ref={overviewRef} className="min-h-0 overflow-y-auto p-6">
@@ -339,6 +338,18 @@ export default function JobList() {
                 </button>
               ) : null}
             </div>
+          </div>
+        ) : jobs.length === 0 ? (
+          <div className="mx-auto flex max-w-xl flex-col items-center pt-16 text-center">
+            <h2 className="text-2xl font-semibold tracking-tight">开始第一个任务</h2>
+            <p className="mt-3 max-w-md text-sm leading-6 text-muted">粘贴视频链接或选择本地文件，几分钟后得到分镜、脚本和试片。</p>
+            <button
+              type="button"
+              onClick={() => setOpen("new")}
+              className="mt-6 rounded-md bg-tungsten px-4 py-2 text-sm font-medium text-ink hover:opacity-90"
+            >
+              新建任务
+            </button>
           </div>
         ) : <div className="flex h-full items-center justify-center text-muted">从左侧选择一个任务</div>}
       </section>
