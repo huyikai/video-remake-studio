@@ -148,30 +148,44 @@ export default function NewJob({ onClose }: Props) {
         ) : null}
         <div className="space-y-4">
           <div className="flex gap-3 text-sm">
-            <button type="button" className={source === "url" ? "text-tungsten" : "text-muted"} onClick={() => setSource("url")}>
+            <button
+              type="button"
+              className={`pb-1 border-b-2 ${source === "url" ? "text-tungsten border-tungsten" : "text-muted border-transparent hover:text-text"}`}
+              onClick={() => setSource("url")}
+            >
               URL
             </button>
-            <button type="button" className={source === "file" ? "text-tungsten" : "text-muted"} onClick={() => setSource("file")}>
+            <button
+              type="button"
+              className={`pb-1 border-b-2 ${source === "file" ? "text-tungsten border-tungsten" : "text-muted border-transparent hover:text-text"}`}
+              onClick={() => setSource("file")}
+            >
               本机绝对路径
             </button>
           </div>
           {source === "url" ? (
-            <input
-              className="w-full rounded border border-line bg-surface px-3 py-2"
-              placeholder="https://…"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
+            <label className="block text-sm text-text">
+              视频链接
+              <input
+                className="mt-1 w-full rounded border border-line bg-surface px-3 py-2"
+                placeholder="https://…"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+              />
+            </label>
           ) : (
-            <input
-              className="w-full rounded border border-line bg-surface px-3 py-2 font-mono text-sm"
-              placeholder="D:\videos\clip.mp4"
-              value={filePath}
-              onChange={(e) => {
-                setFilePath(e.target.value);
-                setConfirmed(false);
-              }}
-            />
+            <label className="block text-sm text-text">
+              本机视频路径
+              <input
+                className="mt-1 w-full rounded border border-line bg-surface px-3 py-2 font-mono text-sm"
+                placeholder="D:\videos\clip.mp4"
+                value={filePath}
+                onChange={(e) => {
+                  setFilePath(e.target.value);
+                  setConfirmed(false);
+                }}
+              />
+            </label>
           )}
           <label className="block text-sm text-text">
             VL 模式
@@ -217,7 +231,7 @@ export default function NewJob({ onClose }: Props) {
               ] as const).map(([key, label, value, setter]) => (
                 <div key={key} className="space-y-2 rounded-lg border border-line p-3">
                   <p className="text-sm text-text">{label}</p>
-                  <label className="block text-xs text-muted">
+                  <label className="block text-xs text-text">
                     工作流
                     <Select value={value.workflow} onValueChange={(v) => setter({ ...value, workflow: v })}>
                       <SelectTrigger className="mt-1 w-full">
@@ -230,13 +244,19 @@ export default function NewJob({ onClose }: Props) {
                       </SelectContent>
                     </Select>
                   </label>
-                  <label className="block text-xs text-muted">
+                  <label className="block text-xs text-text">
                     MP
-                    <input type="number" step="0.01" className="mt-1 w-full rounded border border-line bg-surface p-2 text-sm text-text" value={value.megapixels} onChange={(e) => setter({ ...value, megapixels: Number(e.target.value) })} />
+                    <div className="mt-1 flex items-center gap-2">
+                      <input type="number" step="0.01" className="w-full rounded border border-line bg-surface p-2 text-sm text-text" value={value.megapixels} onChange={(e) => setter({ ...value, megapixels: Number(e.target.value) })} />
+                      <span className="text-xs text-muted">MP</span>
+                    </div>
                   </label>
-                  <label className="block text-xs text-muted">
+                  <label className="block text-xs text-text">
                     步数
-                    <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-sm text-text" value={value.steps} onChange={(e) => setter({ ...value, steps: Number(e.target.value) })} />
+                    <div className="mt-1 flex items-center gap-2">
+                      <input type="number" className="w-full rounded border border-line bg-surface p-2 text-sm text-text" value={value.steps} onChange={(e) => setter({ ...value, steps: Number(e.target.value) })} />
+                      <span className="text-xs text-muted">步</span>
+                    </div>
                   </label>
                 </div>
               ))}
@@ -260,7 +280,7 @@ export default function NewJob({ onClose }: Props) {
           </label>
           {err ? <p className="text-bad">{err}</p> : null}
           <div className="flex justify-end gap-2">
-            <button type="button" className="px-3 py-2 text-sm text-muted" onClick={onClose} disabled={busy}>
+            <button type="button" className="px-3 py-2 text-sm text-muted hover:text-text disabled:hover:text-muted" onClick={onClose} disabled={busy}>
               取消
             </button>
             <button
@@ -269,7 +289,7 @@ export default function NewJob({ onClose }: Props) {
               onClick={() => void submit()}
               className="rounded-md bg-tungsten px-4 py-2 font-medium text-ink disabled:opacity-40"
             >
-              {busy ? "提交中…" : "开始"}
+              {busy ? "提交中…" : "新建并开始"}
             </button>
           </div>
         </div>
