@@ -4,6 +4,16 @@ import { useDefaultLayout } from "react-resizable-panels";
 import Dialog from "../components/Dialog";
 import UnderstandDetail, { type UnderstandDocs } from "../components/UnderstandDetail";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../components/ui/resizable";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { api } from "../lib/api";
 import { dispatchPrimaryAction, primaryActionDisabled, primaryActionFromJob, primaryActionLabel, showCornerPrimary } from "../lib/pipeline";
 import { cn, fileUrl, fmtDur, fmtTime, generatePathLabel, jobNoteText, jobStateLabel, modeLabel, stageStatusLabel } from "../lib/utils";
@@ -275,6 +285,7 @@ export default function JobDetail() {
   const [savedZh, setSavedZh] = useState("");
   const [txt, setTxt] = useState("");
   const [seconds, setSeconds] = useState("");
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
   const [speech, setSpeech] = useState<SpeechLine[]>([]);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
@@ -766,7 +777,7 @@ export default function JobDetail() {
               {err ? <span className="max-w-xs truncate text-bad" title={err}>{err}</span> : null}
               {msg ? <span className="max-w-xs truncate text-ok" title={msg}>{msg}</span> : null}
               {job.running ? (
-                <button type="button" className="text-bad hover:underline" onClick={() => { if (!window.confirm("打断任务并放弃？已有产物会保留。")) return; setErr(""); void api.cancel(id).then(refresh).catch((error: Error) => setErr(error.message)); }}>放弃</button>
+                <button type="button" className="text-bad hover:underline" onClick={() => setConfirmAbandon(true)}>放弃</button>
               ) : null}
             </div>
           </div>
@@ -929,6 +940,7 @@ export default function JobDetail() {
                 status={stageDisplayStatus(job, "finish")}
                 produceLocked={generateLocked}
                 onAssemble={() => void assembleFilm()}
+                onError={(msg) => setErr(msg)}
                 batch={workspaceBatch}
               />
             ) : null}
@@ -1273,13 +1285,25 @@ function ClipProduceButtons({
   const needFinal = clipNeedsFinal(clip);
   const draftGood = clip.draft.status === "done" && !clip.draft.dirty;
   const finalGood = clip.final.status === "done" && !clip.final.dirty;
+  const [confirmAction, setConfirmAction] = useState<null | "draft" | "final">(null);
   function redoDraft() {
-    if (!window.confirm("这段试片已经可用，重做会覆盖现有文件。确定继续？")) return;
-    onDraft([clip.id]);
+    if (draftGood) {
+      setConfirmAction("draft");
+    } else {
+      onDraft([clip.id]);
+    }
   }
   function redoFinal() {
-    if (!window.confirm("这段成片已经可用，重做会覆盖现有文件。确定继续？")) return;
-    onFinal([clip.id]);
+    if (finalGood) {
+      setConfirmAction("final");
+    } else {
+      onFinal([clip.id]);
+    }
+  }
+  function runConfirmed() {
+    if (confirmAction === "draft") onDraft([clip.id]);
+    else if (confirmAction === "final") onFinal([clip.id]);
+    setConfirmAction(null);
   }
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -1294,6 +1318,24 @@ function ClipProduceButtons({
       {allowFinal && finalGood ? (
         <button type="button" className="rounded-md border border-line px-3 py-1.5 text-sm text-muted hover:border-tungsten/60 hover:text-text disabled:opacity-50" disabled={locked} title={blockedReason} onClick={redoFinal}>重做本段成片</button>
       ) : null}
+      <AlertDialog open={confirmAction !== null} onOpenChange={(open) => { if (!open) setConfirmAction(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmAction === "final" ? "重做本段成片？" : "重做本段试片？"}</AlertDialogTitle>
+            <AlertDialogDescription>这段{confirmAction === "final" ? "成片" : "试片"}已经可用，重做会覆盖现有文件。确定继续？</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={locked}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-bad text-ink hover:opacity-90"
+              disabled={locked}
+              onClick={(event) => { event.preventDefault(); runConfirmed(); }}
+            >
+              重做
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -1431,7 +1473,7 @@ function concatStart(clips: ClipRow[], clipId: string | null) {
 }
 
 function FinishWorkspace({
-  job, clips, clipId, finalSrc, coverSrc, status, produceLocked, onAssemble, batch,
+  job, clips, clipId, finalSrc, coverSrc, status, produceLocked, onAssemble, onError, batch,
 }: {
   job: JobDetailData;
   clips: ClipRow[];
@@ -1441,9 +1483,11 @@ function FinishWorkspace({
   status: string;
   produceLocked: boolean;
   onAssemble: () => void;
+  onError: (msg: string) => void;
   batch?: ReactNode;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [openingDir, setOpeningDir] = useState(false);
   const report = job.finish_report;
   const concatDone = status === "done" || Boolean(report?.concat);
   const assCount = Number(report?.ass_events || 0);
@@ -1462,6 +1506,19 @@ function FinishWorkspace({
     else node.addEventListener("loadedmetadata", seek, { once: true });
     return () => node.removeEventListener("loadedmetadata", seek);
   }, [clipId, clips, finalSrc]);
+
+  async function openOutputDir() {
+    if (openingDir) return;
+    setOpeningDir(true);
+    try {
+      await api.openOutputDir(job.id);
+    } catch (error) {
+      onError(`打开输出目录失败：${(error as Error).message}`);
+    } finally {
+      setOpeningDir(false);
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 pb-3">
@@ -1491,6 +1548,16 @@ function FinishWorkspace({
               {job.media?.final ? <a className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm hover:underline" href={fileUrl(job.id, job.media.final)}>下载整片</a> : null}
               {job.media?.cover ? <a className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm hover:underline" href={fileUrl(job.id, job.media.cover)}>下载封面</a> : null}
               {job.media?.ass ? <a className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm hover:underline" href={fileUrl(job.id, job.media.ass)}>下载字幕</a> : null}
+              {job.media?.final ? (
+                <button
+                  type="button"
+                  className="rounded-md border border-line bg-surface px-3 py-1.5 text-sm hover:underline disabled:opacity-50"
+                  disabled={openingDir}
+                  onClick={() => void openOutputDir()}
+                >
+                  打开输出目录
+                </button>
+              ) : null}
             </>
           )}
           primary={
@@ -1692,6 +1759,30 @@ function ScriptWorkspace({
           </div>
         </div>
       ) : null}
+
+      <AlertDialog open={confirmAbandon} onOpenChange={(open) => { if (!open) setConfirmAbandon(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>放弃运行中的任务？</AlertDialogTitle>
+            <AlertDialogDescription>打断任务并放弃。已有产物会保留。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={working}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-bad text-ink hover:opacity-90"
+              disabled={working}
+              onClick={(event) => {
+                event.preventDefault();
+                setConfirmAbandon(false);
+                setErr("");
+                void api.cancel(id).then(refresh).catch((error: Error) => setErr(error.message));
+              }}
+            >
+              放弃
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

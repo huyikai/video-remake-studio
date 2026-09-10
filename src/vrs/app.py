@@ -45,6 +45,7 @@ from vrs.runner import (
     run_finals,
 )
 from vrs.settings import Settings
+from vrs.shell import OpenError, open_in_file_manager
 from vrs.worker import spawn_resume
 
 
@@ -438,6 +439,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return cancel_job(_settings(), job_id)
         except FileNotFoundError:
             raise HTTPException(404, "任务不存在") from None
+
+    @app.post("/api/jobs/{job_id}/open-output-dir")
+    def api_open_output_dir(job_id: str) -> dict:
+        try:
+            directory, job = get_job(_settings(), job_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
+        from vrs.h3grid import normalize_generate_path
+        from vrs.stages.generate import job_generate_path
+        path = job_generate_path(directory, job)
+        path = normalize_generate_path(path)
+        finish = (job.get("stages") or {}).get("finish") or {}
+        if str(finish.get("status") or "") != "done":
+            raise HTTPException(409, "成片还没拼好") from None
+        out_dir = directory / "output" / path
+        if not out_dir.is_dir():
+            raise HTTPException(404, "输出目录不存在") from None
+        try:
+            open_in_file_manager(out_dir)
+        except OpenError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/aspect")
     def api_aspect(job_id: str, body: AspectBody) -> dict:

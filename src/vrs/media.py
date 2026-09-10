@@ -156,7 +156,7 @@ def trim_duration(video: Path, dest: Path, seconds: float, *, log_path: Path | N
 
 def burn_ass(video: Path, ass: Path, dest: Path, *, log_path: Path | None = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    escaped = str(ass.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+    escaped = str(ass.resolve()).replace("\\", "/").replace(":", r"\:")
     run_ffmpeg(
         [
             "-i",
