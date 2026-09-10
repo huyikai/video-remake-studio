@@ -1030,6 +1030,29 @@ export default function JobDetail() {
           </div>
         </Dialog>
       ) : null}
+
+      <AlertDialog open={confirmAbandon} onOpenChange={(open) => { if (!open) setConfirmAbandon(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>放弃运行中的任务？</AlertDialogTitle>
+            <AlertDialogDescription>打断任务并放弃。已有产物会保留。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-bad text-ink hover:opacity-90"
+              onClick={(event) => {
+                event.preventDefault();
+                setConfirmAbandon(false);
+                setErr("");
+                void api.cancel(id).then(refresh).catch((error: Error) => setErr(error.message));
+              }}
+            >
+              放弃
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -1697,8 +1720,13 @@ function ScriptWorkspace({
         <ResizablePanel id="script" defaultSize={wide ? "42%" : "54%"} minSize="28%" className="min-h-0">
           <div className="flex h-full min-h-0 flex-col">
             <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_minmax(0,0.55fr)] gap-3 overflow-hidden p-4">
-              <label className="block text-xs text-muted">H3 时长（秒）<input className="mt-1 w-full rounded-md border border-line bg-panel p-2 text-sm text-text disabled:cursor-not-allowed disabled:opacity-60" value={seconds} disabled={editorLocked} onChange={(event) => setSeconds(event.target.value)} /></label>
-              <label className="relative flex min-h-0 flex-col text-xs text-muted">
+              <label className="block text-xs text-text">H3 时长
+                <div className="mt-1 flex items-center gap-2">
+                  <input className="w-full rounded-md border border-line bg-panel p-2 text-sm text-text disabled:cursor-not-allowed disabled:opacity-60" value={seconds} disabled={editorLocked} onChange={(event) => setSeconds(event.target.value)} />
+                  <span className="text-xs text-muted">秒</span>
+                </div>
+              </label>
+              <label className="relative flex min-h-0 flex-col text-xs text-text">
                 {rewBusy ? "中文脚本（生成中，已锁定）" : saveBusy ? "中文脚本（保存中，已锁定）" : rewPreview ? "中文脚本（请先确认英文预览）" : "中文脚本（唯一可编辑）"}
                 <textarea
                   className={cn("mt-1 min-h-0 flex-1 resize-none rounded-md border border-line bg-panel p-3 text-sm leading-5 text-text", editorLocked ? "cursor-not-allowed opacity-60" : "")}
@@ -1714,7 +1742,7 @@ function ScriptWorkspace({
                   </div>
                 ) : null}
               </label>
-              <div className="flex min-h-0 flex-col text-xs text-muted">喂给 H3 的英文（由程序生成，只读）
+              <div className="flex min-h-0 flex-col text-xs text-text">喂给 H3 的英文（由程序生成，只读）
                 <div className="mt-1 min-h-0 flex-1 overflow-auto rounded-md border border-line bg-panel/50 p-3 font-mono text-xs leading-5 text-muted">
                   <pre className="whitespace-pre-wrap">{rewPreview ? rewPreview.prompt_txt : txt}</pre>
                 </div>
@@ -1751,7 +1779,7 @@ function ScriptWorkspace({
             <pre className="whitespace-pre-wrap text-xs leading-5 text-text">{rewPreview.script_zh}</pre>
           </div>
           <div className="mt-3 flex justify-end gap-2">
-            <button type="button" className="rounded-md px-3 py-2 text-sm text-muted disabled:opacity-50" disabled={working} onClick={onDiscardPreview}>放弃</button>
+            <button type="button" className="rounded-md px-3 py-2 text-sm text-muted hover:text-text disabled:opacity-50" disabled={working} onClick={onDiscardPreview}>放弃</button>
             <button type="button" className="inline-flex items-center gap-2 rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:cursor-wait disabled:opacity-70" disabled={busy || working} onClick={onConfirm}>
               {saveBusy ? <span className="size-3.5 shrink-0 animate-spin rounded-full border-2 border-ink/25 border-t-ink" aria-hidden /> : null}
               {saveBusy ? "保存中..." : "确认并保存"}
@@ -1759,30 +1787,6 @@ function ScriptWorkspace({
           </div>
         </div>
       ) : null}
-
-      <AlertDialog open={confirmAbandon} onOpenChange={(open) => { if (!open) setConfirmAbandon(false); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>放弃运行中的任务？</AlertDialogTitle>
-            <AlertDialogDescription>打断任务并放弃。已有产物会保留。</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={working}>取消</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-bad text-ink hover:opacity-90"
-              disabled={working}
-              onClick={(event) => {
-                event.preventDefault();
-                setConfirmAbandon(false);
-                setErr("");
-                void api.cancel(id).then(refresh).catch((error: Error) => setErr(error.message));
-              }}
-            >
-              放弃
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
