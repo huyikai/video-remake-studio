@@ -2,6 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Dialog from "../components/Dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { api } from "../lib/api";
 
 type Props = { onClose: () => void };
@@ -264,42 +274,39 @@ export default function NewJob({ onClose }: Props) {
           </div>
         </div>
       </Dialog>
-      {aspectDlg ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60">
-          <div className="w-[28rem] rounded-lg border border-line bg-panel p-5">
-            <h2 className="mb-2 font-semibold">原片比例不是 16:9</h2>
-            <p className="mb-4 text-sm text-muted">
-              探测到 {aspectDlg.source_aspect}，默认输出 {aspectDlg.default_aspect} 重构构图。
-            </p>
-            <div className="mb-4 space-y-2 text-sm">
-              <label className="flex gap-2">
-                <input type="radio" checked={aspectChoice === aspectDlg.default_aspect} onChange={() => setAspectChoice(aspectDlg.default_aspect)} />
-                保持 {aspectDlg.default_aspect} 重构
-              </label>
-              <label className="flex gap-2">
-                <input type="radio" checked={aspectChoice === aspectDlg.source_aspect} onChange={() => setAspectChoice(aspectDlg.source_aspect)} />
-                跟原片 {aspectDlg.source_aspect}
-              </label>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button type="button" className="text-muted" onClick={() => setAspectDlg(null)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="rounded bg-tungsten px-3 py-1 text-ink"
-                onClick={() => {
-                  setConfirmed(true);
-                  setAspectDlg(null);
-                  void submit(true);
-                }}
-              >
-                确认并开始
-              </button>
-            </div>
+      <AlertDialog open={aspectDlg !== null} onOpenChange={(open) => { if (!open) setAspectDlg(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>原片比例不是 16:9</AlertDialogTitle>
+            <AlertDialogDescription>
+              探测到 {aspectDlg?.source_aspect}，默认输出 {aspectDlg?.default_aspect} 重构构图。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 text-sm">
+            <label className="flex gap-2">
+              <input type="radio" checked={aspectChoice === aspectDlg?.default_aspect} onChange={() => aspectDlg && setAspectChoice(aspectDlg.default_aspect)} />
+              保持 {aspectDlg?.default_aspect} 重构
+            </label>
+            <label className="flex gap-2">
+              <input type="radio" checked={aspectChoice === aspectDlg?.source_aspect} onChange={() => aspectDlg && setAspectChoice(aspectDlg.source_aspect)} />
+              跟原片 {aspectDlg?.source_aspect}
+            </label>
           </div>
-        </div>
-      ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setAspectDlg(null)}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                setConfirmed(true);
+                setAspectDlg(null);
+                void submit(true);
+              }}
+            >
+              确认并开始
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
