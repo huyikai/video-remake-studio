@@ -173,7 +173,7 @@ export default function NewJob({ onClose }: Props) {
               }}
             />
           )}
-          <label className="block text-sm text-muted">
+          <label className="block text-sm text-text">
             VL 模式
             <Select value={vl} onValueChange={setVl}>
               <SelectTrigger className="mt-1 w-full">
@@ -186,7 +186,7 @@ export default function NewJob({ onClose }: Props) {
               </SelectContent>
             </Select>
           </label>
-          <label className="block text-sm text-muted">
+          <label className="block text-sm text-text">
             生成路线
             <Select
               value={path}
@@ -242,7 +242,7 @@ export default function NewJob({ onClose }: Props) {
               ))}
             </div>
           ) : null}
-          <label className="block text-sm text-muted">
+          <label className="block text-sm text-text">
             审片
             <Select value={review} onValueChange={setReview}>
               <SelectTrigger className="mt-1 w-full">
