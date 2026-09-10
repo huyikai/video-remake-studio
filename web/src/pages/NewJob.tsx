@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Dialog from "../components/Dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { api } from "../lib/api";
 
 type Props = { onClose: () => void };
@@ -24,6 +25,8 @@ export default function NewJob({ onClose }: Props) {
   const [path, setPath] = useState("t2va");
   const [vl, setVl] = useState("both");
   const [smtp, setSmtp] = useState(false);
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpHasPassword, setSmtpHasPassword] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
@@ -47,12 +50,16 @@ export default function NewJob({ onClose }: Props) {
         review_mode?: string;
         vl_mode?: string;
         smtp_enabled?: boolean;
+        smtp_user?: string;
+        smtp_has_password?: boolean;
         t2va?: { draft: QualityForm; final: QualityForm };
         t2va_workflows?: WorkflowOpt[];
       };
       if (rec.review_mode) setReview(rec.review_mode);
       if (rec.vl_mode) setVl(rec.vl_mode);
       if (rec.smtp_enabled) setSmtp(true);
+      setSmtpUser(rec.smtp_user || "");
+      setSmtpHasPassword(Boolean(rec.smtp_has_password));
       if (rec.t2va?.draft && rec.t2va?.final) {
         settingsT2va.current = rec.t2va;
         setDraft(rec.t2va.draft);
@@ -86,6 +93,10 @@ export default function NewJob({ onClose }: Props) {
       setErr(gate?.reasons.join("；") || "进料检查未通过");
       return;
     }
+    if (smtp && (!(smtpUser || "").trim() || !smtpHasPassword)) {
+      setErr("SMTP 已启用但未配置邮箱或授权码。可在设置里填齐，或取消勾选邮件后再新建。");
+      return;
+    }
     try {
       if (source === "file" && !confirmed && !alreadyConfirmed) {
         const ok = await checkFileAspect();
@@ -113,13 +124,18 @@ export default function NewJob({ onClose }: Props) {
     }
   }
 
-  const blocked = Boolean(running) || gate?.ok === false;
+  const smtpReady = Boolean((smtpUser || "").trim() && smtpHasPassword);
+  const smtpBlocked = smtp && !smtpReady;
+  const blocked = Boolean(running) || gate?.ok === false || smtpBlocked;
 
   return (
     <>
       <Dialog title="新建任务" onClose={busy ? () => undefined : onClose}>
         {running ? <p className="mb-3 text-sm text-warn">已有任务在跑，等它结束或先放弃再新建。</p> : null}
         {gate && !gate.ok ? <p className="mb-3 text-sm text-bad">{gate.reasons.join("；")}</p> : null}
+        {smtpBlocked ? (
+          <p className="mb-3 text-sm text-warn">邮件已勾选，但还没填邮箱或授权码。可去设置填齐，或取消勾选后再新建。</p>
+        ) : null}
         <div className="space-y-4">
           <div className="flex gap-3 text-sm">
             <button type="button" className={source === "url" ? "text-tungsten" : "text-muted"} onClick={() => setSource("url")}>
@@ -131,14 +147,14 @@ export default function NewJob({ onClose }: Props) {
           </div>
           {source === "url" ? (
             <input
-              className="w-full rounded border border-line bg-ink px-3 py-2"
+              className="w-full rounded border border-line bg-surface px-3 py-2"
               placeholder="https://…"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
             />
           ) : (
             <input
-              className="w-full rounded border border-line bg-ink px-3 py-2 font-mono text-sm"
+              className="w-full rounded border border-line bg-surface px-3 py-2 font-mono text-sm"
               placeholder="D:\videos\clip.mp4"
               value={filePath}
               onChange={(e) => {
@@ -149,19 +165,22 @@ export default function NewJob({ onClose }: Props) {
           )}
           <label className="block text-sm text-muted">
             VL 模式
-            <select className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={vl} onChange={(e) => setVl(e.target.value)}>
-              <option value="both">both（视频+抽帧）</option>
-              <option value="video">只视频</option>
-              <option value="frames">只抽帧</option>
-            </select>
+            <Select value={vl} onValueChange={setVl}>
+              <SelectTrigger className="mt-1 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="both">both（视频+抽帧）</SelectItem>
+                <SelectItem value="video">只视频</SelectItem>
+                <SelectItem value="frames">只抽帧</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           <label className="block text-sm text-muted">
             生成路线
-            <select
-              className="mt-1 w-full rounded border border-line bg-ink p-2 text-text"
+            <Select
               value={path}
-              onChange={(e) => {
-                const next = e.target.value;
+              onValueChange={(next) => {
                 setPath(next);
                 if (next === "t2va" && settingsT2va.current) {
                   setDraft(settingsT2va.current.draft);
@@ -169,11 +188,16 @@ export default function NewJob({ onClose }: Props) {
                 }
               }}
             >
-              <option value="t2va">T2VA（试片 Turbo / 成片非 LoRA）</option>
-              <option value="t2va_turbo">T2VA Turbo（试片、成片都是 Turbo）</option>
-              <option value="i2va_turbo">I2VA Turbo</option>
-              <option value="ref2va">Ref2VA</option>
-            </select>
+              <SelectTrigger className="mt-1 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="t2va">T2VA（试片 Turbo / 成片非 LoRA）</SelectItem>
+                <SelectItem value="t2va_turbo">T2VA Turbo（试片、成片都是 Turbo）</SelectItem>
+                <SelectItem value="i2va_turbo">I2VA Turbo</SelectItem>
+                <SelectItem value="ref2va">Ref2VA</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           {path === "t2va" ? (
             <div className="grid gap-3 sm:grid-cols-2">
@@ -185,19 +209,24 @@ export default function NewJob({ onClose }: Props) {
                   <p className="text-sm text-text">{label}</p>
                   <label className="block text-xs text-muted">
                     工作流
-                    <select className="mt-1 w-full rounded border border-line bg-ink p-2 text-sm text-text" value={value.workflow} onChange={(e) => setter({ ...value, workflow: e.target.value })}>
-                      {workflows.map((item) => (
-                        <option key={item.id} value={item.id}>{item.label}</option>
-                      ))}
-                    </select>
+                    <Select value={value.workflow} onValueChange={(v) => setter({ ...value, workflow: v })}>
+                      <SelectTrigger className="mt-1 w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {workflows.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </label>
                   <label className="block text-xs text-muted">
                     MP
-                    <input type="number" step="0.01" className="mt-1 w-full rounded border border-line bg-ink p-2 text-sm text-text" value={value.megapixels} onChange={(e) => setter({ ...value, megapixels: Number(e.target.value) })} />
+                    <input type="number" step="0.01" className="mt-1 w-full rounded border border-line bg-surface p-2 text-sm text-text" value={value.megapixels} onChange={(e) => setter({ ...value, megapixels: Number(e.target.value) })} />
                   </label>
                   <label className="block text-xs text-muted">
                     步数
-                    <input type="number" className="mt-1 w-full rounded border border-line bg-ink p-2 text-sm text-text" value={value.steps} onChange={(e) => setter({ ...value, steps: Number(e.target.value) })} />
+                    <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-sm text-text" value={value.steps} onChange={(e) => setter({ ...value, steps: Number(e.target.value) })} />
                   </label>
                 </div>
               ))}
@@ -205,14 +234,19 @@ export default function NewJob({ onClose }: Props) {
           ) : null}
           <label className="block text-sm text-muted">
             审片
-            <select className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={review} onChange={(e) => setReview(e.target.value)}>
-              <option value="pause_draft">审片（停在试片）</option>
-              <option value="full_auto">一条龙出成片</option>
-            </select>
+            <Select value={review} onValueChange={setReview}>
+              <SelectTrigger className="mt-1 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="pause_draft">审片（停在试片）</SelectItem>
+                <SelectItem value="full_auto">一条龙出成片</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={smtp} onChange={(e) => setSmtp(e.target.checked)} />
-            启用 SMTP（须已能登录）
+            启用 SMTP（须已配置邮箱和授权码）
           </label>
           {err ? <p className="text-bad">{err}</p> : null}
           <div className="flex justify-end gap-2">

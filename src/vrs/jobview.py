@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from vrs.lock import JobLock
 from vrs.passb import assemble_zh
 from vrs.promptcheck import iter_clip_speech
 from vrs.settings import Settings
-from vrs.stages.generate import clip_output_dir, job_generate_path
+from vrs.stages.generate import clip_output_dir, job_generate_path, quality_complete
 
 
 def _load(path: Path) -> Any:
@@ -141,42 +142,95 @@ def _media(directory: Path, job: dict[str, Any], path: str) -> dict[str, str | N
             cover = name
             break
     out = directory / "output" / path
+    finish_done = str(((job.get("stages") or {}).get("finish") or {}).get("status") or "") == "done"
     return {
         "source": video if _exists(directory / video) else None,
         "draft": f"output/{path}/draft.mp4" if _exists(out / "draft.mp4") else None,
-        "final": f"output/{path}/final.mp4" if _exists(out / "final.mp4") else None,
-        "cover": cover,
-        "ass": f"output/{path}/final.ass" if _exists(out / "final.ass") else None,
+        "final": f"output/{path}/final.mp4" if finish_done and _exists(out / "final.mp4") else None,
+        "cover": cover if finish_done else None,
+        "ass": f"output/{path}/final.ass" if finish_done and _exists(out / "final.ass") else None,
     }
 
 
-def next_primary_action(job: dict[str, Any], *, dirty: bool = False, running: bool = False) -> str:
+def _quality_flags(directory: Path, job: dict[str, Any]) -> tuple[bool, bool]:
+    clips = list((_load(directory / "clips.json") or {}).get("clips") or [])
+    if not clips:
+        return False, False
+    try:
+        path = job_generate_path(directory, job)
+    except Exception:
+        return False, False
+    return (
+        quality_complete(directory, clips, "draft", path=path),
+        quality_complete(directory, clips, "final", path=path),
+    )
+
+
+def _stage_status(job: dict[str, Any], name: str) -> str:
+    rec = (job.get("stages") or {}).get(name)
+    if isinstance(rec, dict):
+        return str(rec.get("status") or "")
+    return ""
+
+
+def ui_stage(
+    job: dict[str, Any],
+    *,
+    drafts_ready: bool = False,
+    finals_ready: bool = False,
+    last_quality: str | None = None,
+) -> str:
+    finish = _stage_status(job, "finish")
+    generate = _stage_status(job, "generate")
+    if finish in {"running", "done"}:
+        return "finish"
+    if generate == "running":
+        return "clips" if last_quality == "final" or drafts_ready else "draft"
+    if generate in {"failed", "waiting"}:
+        return "clips" if drafts_ready else "draft"
+    for name in ("download", "pagemeta", "understand", "script", "precheck"):
+        if _stage_status(job, name) not in {"done", "skipped"}:
+            return name
+    if finals_ready:
+        return "clips"
+    if drafts_ready or _stage_status(job, "precheck") in {"done", "skipped"}:
+        return "draft"
+    backend = str(job.get("stage") or "download")
+    if backend == "generate":
+        return "draft"
+    if backend == "finish":
+        return "finish"
+    return backend
+
+
+def next_primary_action(
+    job: dict[str, Any],
+    *,
+    dirty: bool = False,
+    running: bool = False,
+    drafts_ready: bool = False,
+    finals_ready: bool = False,
+) -> str:
     state = str(job.get("state") or "").lower()
-    if running or state == "running":
+    if running:
         return "busy"
-    if state == "done":
-        return "done"
     if state in {"cancelled", "canceled"}:
         return "cancelled"
     if state in {"failed", "error"}:
         return "retry"
     if dirty:
         return "redraft"
-    stages = job.get("stages") or {}
-
-    def status(name: str) -> str:
-        rec = stages.get(name)
-        if isinstance(rec, dict):
-            return str(rec.get("status") or "")
-        return ""
-
+    if state == "done":
+        return "done"
     for name in ("download", "pagemeta", "understand", "script", "precheck"):
-        if status(name) not in {"done", "skipped"}:
+        if _stage_status(job, name) not in {"done", "skipped"}:
             return name
-    if status("generate") not in {"done", "skipped"}:
+    if not drafts_ready:
         return "draft"
-    if status("finish") not in {"done", "skipped"}:
+    if not finals_ready:
         return "final"
+    if _stage_status(job, "finish") not in {"done", "skipped"}:
+        return "assemble"
     return "done"
 
 
@@ -198,25 +252,52 @@ def _dirty_clip_ids(directory: Path, job: dict[str, Any]) -> list[str]:
     return dirty
 
 
-def summarize_job(job: dict[str, Any], *, dirty: bool = False, running: bool = False) -> dict[str, Any]:
-    stages = job.get("stages") or {}
-    done = sum(1 for rec in stages.values() if isinstance(rec, dict) and rec.get("status") in {"done", "skipped"})
+def summarize_job(
+    job: dict[str, Any],
+    *,
+    dirty: bool = False,
+    running: bool = False,
+    drafts_ready: bool = False,
+    finals_ready: bool = False,
+    last_quality: str | None = None,
+) -> dict[str, Any]:
+    understand = job.get("understand_progress") or {}
+    sub_progress = understand.get("chip") if isinstance(understand, dict) else None
     return {
         "id": job.get("id"),
         "mode": (job.get("options") or {}).get("mode") or "real",
         "state": job.get("state"),
-        "stage": job.get("stage"),
+        "stage": ui_stage(job, drafts_ready=drafts_ready, finals_ready=finals_ready, last_quality=last_quality),
         "note": job.get("note"),
+        "sub_progress": sub_progress,
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
         "elapsed_sec": elapsed_seconds(job),
         "source": job.get("source"),
         "options": job.get("options"),
-        "stages_done": done,
-        "stages_total": len(stages) or 7,
         "need_aspect_confirm": bool(job.get("need_aspect_confirm")),
-        "next_action": next_primary_action(job, dirty=dirty, running=running),
+        "drafts_ready": drafts_ready,
+        "finals_ready": finals_ready,
+        "next_action": next_primary_action(
+            job, dirty=dirty, running=running, drafts_ready=drafts_ready, finals_ready=finals_ready
+        ),
     }
+
+
+def _download_auth_cookie(job: dict[str, Any]) -> bool:
+    from vrs.f2douyin import is_douyin_auth_error, is_douyin_url
+
+    url = str((job.get("source") or {}).get("url") or "")
+    if not is_douyin_url(url):
+        return False
+    error = ((job.get("stages") or {}).get("download") or {}).get("error")
+    return bool(error) and is_douyin_auth_error(error)
+
+
+def _cookie_expired_flag(settings: Settings) -> bool:
+    from vrs.f2douyin import cookie_expired
+
+    return cookie_expired(settings)
 
 
 def list_jobs_payload(settings: Settings) -> dict[str, Any]:
@@ -226,7 +307,22 @@ def list_jobs_payload(settings: Settings) -> dict[str, Any]:
         job_id = str(job.get("id") or "")
         directory = job_dir(settings, job_id) if job_id else None
         dirty = bool(directory and directory.is_dir() and _dirty_clip_ids(directory, job))
-        jobs.append(summarize_job(job, dirty=dirty, running=bool(job_id and running == job_id)))
+        drafts_ready = False
+        finals_ready = False
+        last_quality = None
+        if directory and directory.is_dir():
+            drafts_ready, finals_ready = _quality_flags(directory, job)
+            last_quality = str((_load(directory / "generate.json") or {}).get("last_quality") or "") or None
+        jobs.append(
+            summarize_job(
+                job,
+                dirty=dirty,
+                running=bool(job_id and running == job_id),
+                drafts_ready=drafts_ready,
+                finals_ready=finals_ready,
+                last_quality=last_quality,
+            )
+        )
     return {"jobs": jobs, "running_job_id": running}
 
 
@@ -311,6 +407,16 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
     source_aspect = job.get("source_aspect")
     if not source_aspect and probe.get("width") and probe.get("height"):
         source_aspect = aspect_label(int(probe["width"]), int(probe["height"]))
+    finish_doc = _load(directory / "finish.json") or {}
+    drafts_ready = quality_complete(directory, clips, "draft", path=path) if clips else False
+    finals_ready = quality_complete(directory, clips, "final", path=path) if clips else False
+    occupied = occupied_job_id(settings) == job_id
+    view = ui_stage(
+        job,
+        drafts_ready=drafts_ready,
+        finals_ready=finals_ready,
+        last_quality=str(progress.get("last_quality") or "") or None,
+    )
     return {
         **job,
         "mode": (job.get("options") or {}).get("mode") or "real",
@@ -319,8 +425,16 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
         "generate_path": path,
         "clips": rows,
         "dirty_clip_ids": dirty_ids,
+        "drafts_ready": drafts_ready,
+        "finals_ready": finals_ready,
+        "stage": view,
+        "ui_stage": view,
         "next_action": next_primary_action(
-            job, dirty=bool(dirty_ids), running=occupied_job_id(settings) == job_id
+            job,
+            dirty=bool(dirty_ids),
+            running=occupied,
+            drafts_ready=drafts_ready,
+            finals_ready=finals_ready,
         ),
         "media": _media(directory, job, path),
         "events": list(progress.get("events") or [])[-40:],
@@ -328,6 +442,14 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
             "ok": precheck.get("ok"),
             "errors": precheck.get("errors") or [],
             "warnings": precheck.get("warnings") or [],
+        },
+        "finish_report": {
+            "ok": finish_doc.get("ok"),
+            "clips": finish_doc.get("clips"),
+            "concat": bool(finish_doc.get("concat")),
+            "ass_burn": bool(finish_doc.get("ass_burn")),
+            "ass_events": finish_doc.get("ass_events") or 0,
+            "cover": finish_doc.get("cover"),
         },
         "generate_progress": {
             "last_clip": progress.get("last_clip"),
@@ -337,7 +459,10 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
             "final": progress.get("final"),
         },
         "source_aspect": source_aspect,
-        "running": occupied_job_id(settings) == job_id,
+        "running": occupied,
+        "download_auth_cookie": _download_auth_cookie(job),
+        "douyin_cookie_from_env": bool((os.environ.get("VRS_DOUYIN_COOKIE") or "").strip()),
+        "douyin_cookie_expired": _cookie_expired_flag(settings),
         "scripts": None,
         "clips_json": None if compact else (clips_doc if clips else None),
         "prompts_index": None if compact else _load(directory / "prompts.json"),

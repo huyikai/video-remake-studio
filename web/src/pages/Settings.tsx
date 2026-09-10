@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import Dialog from "../components/Dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { api } from "../lib/api";
+import { cn } from "../lib/utils";
 
 type QualityForm = { workflow: string; megapixels: number; steps: number };
 
@@ -17,8 +19,16 @@ type SettingsView = {
   smtp_enabled: boolean;
   smtp_to: string[];
   smtp_host: string;
+  smtp_user: string;
   smtp_has_password: boolean;
+  smtp_password_from_env: boolean;
   smtp_hint: string;
+  douyin_cookie_set: boolean;
+  douyin_cookie_from_env: boolean;
+  douyin_cookie_expired: boolean;
+  douyin_cookie_state?: "missing" | "ok" | "expired";
+  douyin_cookie_status: string;
+  douyin_cookie_hint: string;
   aspect_ratio: string;
   aspect_confirm: boolean;
   review_mode: string;
@@ -34,9 +44,19 @@ type Props = { onClose: () => void };
 export default function SettingsPage({ onClose }: Props) {
   const [form, setForm] = useState<SettingsView | null>(null);
   const [msg, setMsg] = useState("");
+  const [msgWarn, setMsgWarn] = useState(false);
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
   const [faultText, setFaultText] = useState("{}");
+  const [cookieDraft, setCookieDraft] = useState("");
+  const [clearCookie, setClearCookie] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [smtpAuth, setSmtpAuth] = useState("");
+  const [clearSmtpAuth, setClearSmtpAuth] = useState(false);
+  const [smtpTesting, setSmtpTesting] = useState(false);
+  const [smtpTestMsg, setSmtpTestMsg] = useState("");
+  const [smtpTestOk, setSmtpTestOk] = useState<boolean | null>(null);
 
   useEffect(() => {
     api.settings().then((d) => {
@@ -75,6 +95,8 @@ export default function SettingsPage({ onClose }: Props) {
         job_restart_max: form.job_restart_max,
         smtp_enabled: form.smtp_enabled,
         smtp_to: form.smtp_to,
+        smtp_user: form.smtp_user,
+        ...(clearSmtpAuth ? { smtp_password: "" } : smtpAuth.trim() ? { smtp_password: smtpAuth.trim() } : {}),
         aspect_ratio: form.aspect_ratio,
         aspect_confirm: form.aspect_confirm,
         review_mode: form.review_mode,
@@ -82,14 +104,75 @@ export default function SettingsPage({ onClose }: Props) {
         esrgan: form.esrgan,
         ass_burn: form.ass_burn,
         t2va: form.t2va,
+        ...(clearCookie ? { douyin_cookie: "" } : cookieDraft.trim() ? { douyin_cookie: cookieDraft.trim() } : {}),
       });
       setForm(next as SettingsView);
       setFaultText(JSON.stringify((next as SettingsView).mock_faults || {}, null, 2));
-      setMsg("已写入本机运行时配置");
+      setCookieDraft("");
+      setClearCookie(false);
+      setReplaceOpen(false);
+      setSmtpAuth("");
+      setClearSmtpAuth(false);
+      const savedAuth = Boolean(smtpAuth.trim() || clearSmtpAuth);
+      if ((next as SettingsView).smtp_password_from_env && savedAuth) {
+        setMsgWarn(true);
+        setMsg("已写入本机配置，但当前仍使用环境变量 VRS_SMTP_PASSWORD，发信不会用到这次保存。请先清掉该变量。");
+      } else if ((next as SettingsView).douyin_cookie_from_env && (cookieDraft.trim() || clearCookie)) {
+        setMsgWarn(true);
+        setMsg("已写入本机配置，但当前仍使用环境变量 VRS_DOUYIN_COOKIE，下载不会用到这次保存。请先清掉该变量。");
+      } else {
+        setMsgWarn(false);
+        setMsg("已写入本机配置");
+      }
     } catch (e) {
       setErr((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function testSmtp() {
+    if (!form) return;
+    setErr("");
+    setSmtpTestMsg("");
+    setSmtpTestOk(null);
+    setSmtpTesting(true);
+    try {
+      const result = await api.testSmtp();
+      setSmtpTestOk(result.ok);
+      setSmtpTestMsg(result.detail);
+    } catch (e) {
+      setSmtpTestOk(false);
+      setSmtpTestMsg((e as Error).message);
+    } finally {
+      setSmtpTesting(false);
+    }
+  }
+
+  async function importCookie(forceWindow = false) {
+    if (!form) return;
+    setErr("");
+    setMsg("");
+    setMsgWarn(false);
+    setImporting(true);
+    try {
+      const next = (await api.importDouyinCookie(forceWindow)) as SettingsView;
+      setForm(next);
+      setCookieDraft("");
+      setClearCookie(false);
+      setReplaceOpen(false);
+      const via = (next as SettingsView & { douyin_cookie_imported_via?: string }).douyin_cookie_imported_via;
+      if (next.douyin_cookie_from_env) {
+        setMsgWarn(true);
+        setMsg("已写入本机配置，但当前仍使用环境变量 VRS_DOUYIN_COOKIE，下载不会用到这次导入。请先清掉该变量。");
+      } else {
+        setMsgWarn(false);
+        setMsg(via === "cdp" ? "已从正在运行的 Chrome 导入" : "已从登录窗口导入");
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -102,53 +185,178 @@ export default function SettingsPage({ onClose }: Props) {
           <section className="rounded-lg border border-tungsten/40 bg-tungsten/10 p-4">
             <div className="flex items-center justify-between gap-3">
               <div><p className="text-xs uppercase tracking-[0.16em] text-muted">运行环境</p><h3 className="mt-1 font-semibold">执行模式</h3><p className="mt-1 text-xs text-muted">模拟不调用真实模型，真实模式会检查本机推理环境。</p></div>
-              <select className="rounded border border-line bg-surface p-2 text-sm text-text" value={form.mode} onChange={(e) => set("mode", e.target.value as SettingsView["mode"])}><option value="mock">模拟</option><option value="real">真实</option></select>
+              <Select value={form.mode} onValueChange={(v) => set("mode", v as SettingsView["mode"])}>
+                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mock">模拟</SelectItem>
+                  <SelectItem value="real">真实</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            {form.mode === "mock" ? <div className="mt-4 space-y-3 border-t border-line/60 pt-4"><label className="block text-muted">模拟速度<select className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.mock_speed} onChange={(e) => set("mock_speed", e.target.value as SettingsView["mock_speed"])}><option value="0.25x">0.25x</option><option value="1x">1x</option><option value="4x">4x</option></select></label><label className="block text-muted">故障场景 JSON<textarea className="mt-1 h-20 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text" value={faultText} onChange={(e) => setFaultText(e.target.value)} /></label><p className="text-xs text-muted">示例：{"{\"generate\":{\"clip_id\":\"h3_01\",\"count\":1,\"type\":\"timeout\"}}"}</p></div> : null}
+            {form.mode === "mock" ? <div className="mt-4 space-y-3 border-t border-line/60 pt-4"><label className="block text-muted">模拟速度<Select value={form.mock_speed} onValueChange={(v) => set("mock_speed", v as SettingsView["mock_speed"])}><SelectTrigger className="mt-1 w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="0.25x">0.25x</SelectItem><SelectItem value="1x">1x</SelectItem><SelectItem value="4x">4x</SelectItem></SelectContent></Select></label><label className="block text-muted">故障场景 JSON<textarea className="mt-1 h-20 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text" value={faultText} onChange={(e) => setFaultText(e.target.value)} /></label><p className="text-xs text-muted">示例：{"{\"generate\":{\"clip_id\":\"h3_01\",\"count\":1,\"type\":\"timeout\"}}"}</p></div> : null}
+          </section>
+          <section className="rounded-lg border border-line p-4">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">抖音进料</p>
+            <h3 className="mt-1 font-semibold">登录 Cookie</h3>
+            <p className={cn("mt-1 text-xs", form.douyin_cookie_expired ? "text-bad" : form.douyin_cookie_set ? "text-ok" : "text-muted")}>
+              {form.douyin_cookie_status || (form.douyin_cookie_set ? "已配置" : "未配置")}
+            </p>
+            {form.douyin_cookie_from_env ? <p className="mt-1 text-xs text-warn">当前实际使用环境变量 VRS_DOUYIN_COOKIE。本机配置改了也不生效，过期时请先清掉该变量。</p> : null}
+            {form.douyin_cookie_set && !form.douyin_cookie_expired && !replaceOpen ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="rounded border border-line px-3 py-1.5 text-sm text-muted" onClick={() => setReplaceOpen(true)}>
+                  更换
+                </button>
+                {!form.douyin_cookie_from_env ? (
+                  <button
+                    type="button"
+                    className="text-xs text-bad hover:underline"
+                    onClick={() => {
+                      setCookieDraft("");
+                      setClearCookie(true);
+                      setReplaceOpen(true);
+                    }}
+                  >
+                    {clearCookie ? "将在保存时清除" : "清除"}
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded bg-tungsten px-3 py-1.5 text-sm text-ink disabled:opacity-40"
+                    disabled={importing || saving}
+                    onClick={() => void importCookie(false)}
+                  >
+                    {importing ? "等待登录…" : "一键导入"}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-line px-3 py-1.5 text-sm text-muted disabled:opacity-40"
+                    disabled={importing || saving}
+                    onClick={() => void importCookie(true)}
+                  >
+                    打开登录窗口
+                  </button>
+                  {form.douyin_cookie_set && !form.douyin_cookie_expired ? (
+                    <button type="button" className="rounded border border-line px-3 py-1.5 text-sm text-muted" onClick={() => { setReplaceOpen(false); setCookieDraft(""); setClearCookie(false); }}>
+                      取消
+                    </button>
+                  ) : null}
+                </div>
+                <label className="mt-3 block text-muted">
+                  {form.douyin_cookie_set ? "粘贴新 Cookie（留空则不改）" : "粘贴 Cookie"}
+                  <textarea
+                    className="mt-1 h-24 w-full rounded border border-line bg-surface p-2 font-mono text-xs text-text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={cookieDraft}
+                    placeholder={form.douyin_cookie_set ? "已保存，不会回显" : "sessionid=...; ..."}
+                    onChange={(e) => {
+                      setCookieDraft(e.target.value);
+                      setClearCookie(false);
+                    }}
+                  />
+                </label>
+              </>
+            )}
+            <p className="mt-2 text-xs text-muted">{form.douyin_cookie_hint}</p>
           </section>
           <label className="block text-muted">
             Comfy base_url
-            <input className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.comfy_base_url} onChange={(e) => set("comfy_base_url", e.target.value)} />
+            <input className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.comfy_base_url} onChange={(e) => set("comfy_base_url", e.target.value)} />
           </label>
           <label className="block text-muted">
             显存档 gpu_memory_gb
-            <input type="number" className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.gpu_memory_gb} onChange={(e) => set("gpu_memory_gb", Number(e.target.value))} />
+            <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.gpu_memory_gb} onChange={(e) => set("gpu_memory_gb", Number(e.target.value))} />
           </label>
           <label className="block text-muted">
             看门狗 hang_timeout_sec
-            <input type="number" className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.hang_timeout_sec} onChange={(e) => set("hang_timeout_sec", Number(e.target.value))} />
+            <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.hang_timeout_sec} onChange={(e) => set("hang_timeout_sec", Number(e.target.value))} />
           </label>
           <label className="block text-muted">
             单段超时 generate_clip_timeout_sec
-            <input type="number" className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.generate_clip_timeout_sec} onChange={(e) => set("generate_clip_timeout_sec", Number(e.target.value))} />
+            <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.generate_clip_timeout_sec} onChange={(e) => set("generate_clip_timeout_sec", Number(e.target.value))} />
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-muted">
               clip 重启上限
-              <input type="number" className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.clip_restart_max} onChange={(e) => set("clip_restart_max", Number(e.target.value))} />
+              <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.clip_restart_max} onChange={(e) => set("clip_restart_max", Number(e.target.value))} />
             </label>
             <label className="block text-muted">
               job 重启上限
-              <input type="number" className="mt-1 w-full rounded border border-line bg-ink p-2 text-text" value={form.job_restart_max} onChange={(e) => set("job_restart_max", Number(e.target.value))} />
+              <input type="number" className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.job_restart_max} onChange={(e) => set("job_restart_max", Number(e.target.value))} />
             </label>
           </div>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.smtp_enabled} onChange={(e) => set("smtp_enabled", e.target.checked)} />
-            SMTP enabled
+            启用 SMTP 邮件提醒
           </label>
           <label className="block text-muted">
             收件人（逗号分隔）
             <input
-              className="mt-1 w-full rounded border border-line bg-ink p-2 text-text"
+              className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
               value={form.smtp_to.join(", ")}
               onChange={(e) => set("smtp_to", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
             />
           </label>
+          <label className="block text-muted">
+            发件账号
+            <input
+              className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+              value={form.smtp_user || ""}
+              autoComplete="username"
+              placeholder="例如 QQ 邮箱地址"
+              onChange={(e) => set("smtp_user", e.target.value)}
+            />
+          </label>
+          <label className="block text-muted">
+            {form.smtp_has_password ? "新授权码（留空则不改）" : "授权码"}
+            <input
+              type="password"
+              className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+              value={smtpAuth}
+              autoComplete="new-password"
+              spellCheck={false}
+              placeholder={form.smtp_has_password ? "已保存，不会回显" : "QQ 邮箱授权码，不是登录密码"}
+              onChange={(e) => {
+                setSmtpAuth(e.target.value);
+                setClearSmtpAuth(false);
+              }}
+            />
+          </label>
+          {form.smtp_has_password && !form.smtp_password_from_env ? (
+            <button
+              type="button"
+              className="text-xs text-bad hover:underline"
+              onClick={() => {
+                setSmtpAuth("");
+                setClearSmtpAuth(true);
+              }}
+            >
+              {clearSmtpAuth ? "将在保存时清除授权码" : "清除授权码"}
+            </button>
+          ) : null}
+          {form.smtp_password_from_env ? <p className="text-xs text-warn">当前实际使用环境变量 VRS_SMTP_PASSWORD。本机配置改了也不生效，请先清掉该变量。</p> : null}
           <p className="text-xs text-muted">
-            主机 {form.smtp_host || "未配置"} · {form.smtp_has_password ? "已配置密码" : "未配置密码"}
+            主机 {form.smtp_host || "未配置"} · {form.smtp_has_password ? "已配置授权码" : "未配置授权码"}
             <br />
             {form.smtp_hint}
           </p>
+          {form.smtp_enabled && (!(form.smtp_user || "").trim() || !form.smtp_has_password) ? (
+            <p className="text-xs text-warn">启用了邮件但还缺邮箱或授权码。填齐后才能在勾选邮件的任务上开跑。</p>
+          ) : null}
+          <button
+            type="button"
+            className="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-40"
+            disabled={!form.smtp_enabled || !(form.smtp_user || "").trim() || !form.smtp_has_password || !(form.smtp_to || []).length || smtpTesting}
+            onClick={() => void testSmtp()}
+          >
+            {smtpTesting ? "发送中…" : "发送测试"}
+          </button>
+          {smtpTestMsg ? <p className={cn("text-xs", smtpTestOk ? "text-ok" : "text-bad")}>{smtpTestMsg}</p> : null}
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={form.esrgan} onChange={(e) => set("esrgan", e.target.checked)} />
             RealESRGAN
@@ -168,22 +376,26 @@ export default function SettingsPage({ onClose }: Props) {
                   <p className="text-sm text-text">{quality === "draft" ? "试片" : "成片"}</p>
                   <label className="block text-muted">
                     工作流
-                    <select
-                      className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+                    <Select
                       value={form.t2va[quality].workflow}
-                      onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], workflow: e.target.value } })}
+                      onValueChange={(v) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], workflow: v } })}
                     >
-                      {(form.t2va_workflows || []).map((item) => (
-                        <option key={item.id} value={item.id}>{item.label}</option>
-                      ))}
-                    </select>
+                      <SelectTrigger className="mt-1 w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(form.t2va_workflows || []).map((item) => (
+                          <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </label>
                   <label className="block text-muted">
                     MP
                     <input
                       type="number"
                       step="0.01"
-                      className="mt-1 w-full rounded border border-line bg-ink p-2 text-text"
+                      className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
                       value={form.t2va[quality].megapixels}
                       onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], megapixels: Number(e.target.value) } })}
                     />
@@ -192,7 +404,7 @@ export default function SettingsPage({ onClose }: Props) {
                     步数
                     <input
                       type="number"
-                      className="mt-1 w-full rounded border border-line bg-ink p-2 text-text"
+                      className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
                       value={form.t2va[quality].steps}
                       onChange={(e) => set("t2va", { ...form.t2va, [quality]: { ...form.t2va[quality], steps: Number(e.target.value) } })}
                     />
@@ -202,7 +414,7 @@ export default function SettingsPage({ onClose }: Props) {
             </div>
           </section>
             ) : null}
-          {msg ? <p className="text-ok">{msg}</p> : null}
+          {msg ? <p className={msgWarn ? "text-warn" : "text-ok"}>{msg}</p> : null}
           {err ? <p className="text-bad">{err}</p> : null}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="px-3 py-2 text-muted" onClick={onClose}>

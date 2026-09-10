@@ -83,6 +83,7 @@ export default function StatusBar() {
           <StatusDot item={byId.get("qwen3_asr_model_dir") || byId.get("asr")} label="ASR" />
           <StatusDot item={byId.get("vl")} label="VL" />
           <StatusDot item={byId.get("comfy")} label="Comfy" />
+          {byId.get("smtp") ? <StatusDot item={byId.get("smtp")} label="SMTP" /> : null}
         </span>
         <span className="min-w-0 truncate text-text/80">{summary}</span>
       </button>

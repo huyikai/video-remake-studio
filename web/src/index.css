@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 @theme {
   --font-sans: "Segoe UI", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
@@ -9,12 +10,19 @@
   --color-line: var(--line);
   --color-muted: var(--muted);
   --color-text: var(--text);
+  --color-ink: var(--text);
   --color-tungsten: var(--accent);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
   --color-ok: var(--ok);
   --color-border: var(--line);
   --color-ring: var(--accent);
+  --color-input: var(--line);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--text);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--bg);
 }
 
 :root {

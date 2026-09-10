@@ -5,6 +5,11 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export function jobNoteText(note: string | null | undefined): string {
+  if (!note) return "";
+  return note.split(/\nTraceback\b/)[0].trim();
+}
+
 export function fmtDur(sec: number | null | undefined): string {
   if (sec == null || Number.isNaN(sec)) return "—";
   const n = Math.max(0, Math.round(sec));

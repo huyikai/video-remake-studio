@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, type EnvPayload, type JobSummary, type MetricsPayload } from "../lib/api";
-import { dispatchPrimaryAction, primaryActionDisabled, primaryActionFromJob, primaryActionHint, primaryActionLabel } from "../lib/pipeline";
-import { cn, deleteJobsConfirmMessage, fmtDur, generatePathLabel, jobDeletable, jobStateLabel, modeLabel } from "../lib/utils";
+import { dispatchPrimaryAction, primaryActionDisabled, primaryActionFromJob, primaryActionHint, primaryActionLabel, showCornerPrimary } from "../lib/pipeline";
+import { cn, deleteJobsConfirmMessage, fmtDur, generatePathLabel, jobDeletable, jobNoteText, jobStateLabel, modeLabel } from "../lib/utils";
 import { useUi } from "../ui";
 
 const STATE: Record<string, string> = {
@@ -21,7 +21,9 @@ const STAGE: Record<string, string> = {
   script: "脚本",
   precheck: "预检",
   generate: "生成",
-  finish: "交付",
+  draft: "试片",
+  clips: "成片",
+  finish: "拼接成片",
 };
 
 export default function JobList() {
@@ -38,6 +40,7 @@ export default function JobList() {
   const [metrics, setMetrics] = useState<MetricsPayload | null>(null);
   const [checked, setChecked] = useState<string[]>([]);
   const [deleting, setDeleting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const overviewRef = useRef<HTMLElement>(null);
   const { setOpen } = useUi();
 
@@ -148,6 +151,21 @@ export default function JobList() {
     setDeleting(false);
   }
 
+  async function abandonRunning() {
+    if (!running || cancelling) return;
+    if (!window.confirm("打断任务并放弃？已有产物会保留。")) return;
+    setCancelling(true);
+    setErr("");
+    try {
+      await api.cancel(running);
+      await load();
+    } catch (error) {
+      setErr((error as Error).message);
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function runActivePrimary() {
     if (!active) return;
     const current = { ...active, running: occupied };
@@ -199,7 +217,19 @@ export default function JobList() {
             </button>
           </div>
         ) : null}
-        {running ? <p className="mb-4 rounded-md border border-warn/40 bg-warn/10 p-3 text-xs text-warn">已有任务运行中。完成或放弃后才能新建。</p> : null}
+        {running ? (
+          <div className="mb-4 flex items-center gap-2 rounded-md border border-warn/40 bg-warn/10 p-3">
+            <p className="min-w-0 flex-1 text-xs text-warn">已有任务运行中。完成或放弃后才能新建。</p>
+            <button
+              type="button"
+              className="shrink-0 rounded border border-bad/40 px-2 py-1 text-xs text-bad hover:bg-bad/10 disabled:opacity-40"
+              disabled={cancelling}
+              onClick={() => void abandonRunning()}
+            >
+              {cancelling ? "放弃中..." : "放弃"}
+            </button>
+          </div>
+        ) : null}
         {err ? <p className="mb-4 rounded-md border border-bad/40 bg-bad/10 p-3 text-xs text-bad">{err}</p> : null}
         <div className="space-y-2">
           {jobs.map((job) => {
@@ -228,7 +258,7 @@ export default function JobList() {
                     <span>{STAGE[job.stage] || job.stage}</span>
                     <span className="tabular-nums">{fmtDur(job.elapsed_sec)}</span>
                   </div>
-                  <p className="mt-2 line-clamp-2 text-xs text-muted">{job.note}</p>
+                  {jobNoteText(job.note) ? <p className="mt-2 line-clamp-2 text-xs text-muted">{jobNoteText(job.note)}</p> : null}
                 </button>
               </div>
             );
@@ -243,8 +273,7 @@ export default function JobList() {
             <h2 className="mt-2 text-3xl font-semibold tracking-tight">{STAGE[active.stage] || active.stage}</h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-muted">{active.note || "选择左侧任务查看详细进度"}</p>
             <div className="mt-8 rounded-xl border border-line bg-surface p-5">
-              <div className="flex items-center justify-between text-sm"><span>任务进度</span><span className="font-mono text-tungsten">{active.stages_done ?? 0}/{active.stages_total ?? 7}</span></div>
-              <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-panel"><div className="h-full rounded-full bg-tungsten transition-all" style={{ width: `${Math.round(((active.stages_done ?? 0) / Math.max(1, active.stages_total ?? 7)) * 100)}%` }} /></div>
+              <div className="flex items-center justify-between text-sm"><span>任务进度</span><span className={cn("rounded-md px-2 py-1 text-xs font-medium", active.state === "done" ? "bg-ok/20 text-ok" : "bg-panel text-tungsten")}>{active.state === "done" ? "已完成" : (active.sub_progress ? `${STAGE[active.stage] || active.stage} · ${active.sub_progress}` : (STAGE[active.stage] || active.stage))}</span></div>
               <div className="mt-5 flex flex-wrap gap-2 text-xs text-muted"><span className="rounded border border-line px-2 py-1">{active.source?.kind === "url" ? "URL 输入" : "本地输入"}</span><span className="rounded border border-line px-2 py-1">{generatePathLabel(String(active.options?.generate_path || "t2va"))}</span><span className="rounded border border-tungsten/40 bg-tungsten/10 px-2 py-1 text-tungsten">{modeLabel(active.mode)}</span></div>
             </div>
             <div className="mt-8 grid gap-3 sm:grid-cols-2">
@@ -252,15 +281,17 @@ export default function JobList() {
                 <span className="text-sm font-medium">打开任务详情</span>
                 <span className="mt-1 block text-xs text-muted">查看片段、脚本、预览和日志</span>
               </button>
-              <button
-                type="button"
-                disabled={!activeJob || primaryActionDisabled(activeJob)}
-                className="rounded-lg border border-line bg-surface p-4 text-left hover:border-tungsten/50 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() => void runActivePrimary()}
-              >
-                <span className="text-sm font-medium">{acting ? "处理中..." : activeJob ? primaryActionLabel(activeJob) : "出试片"}</span>
-                <span className="mt-1 block text-xs text-muted">{activeJob ? primaryActionHint(activeJob) : ""}</span>
-              </button>
+              {activeJob && showCornerPrimary(activeJob) ? (
+                <button
+                  type="button"
+                  disabled={primaryActionDisabled(activeJob)}
+                  className="rounded-lg border border-line bg-surface p-4 text-left hover:border-tungsten/50 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => void runActivePrimary()}
+                >
+                  <span className="text-sm font-medium">{acting ? "处理中..." : primaryActionLabel(activeJob)}</span>
+                  <span className="mt-1 block text-xs text-muted">{primaryActionHint(activeJob)}</span>
+                </button>
+              ) : null}
             </div>
           </div>
         ) : <div className="flex h-full items-center justify-center text-muted">从左侧选择一个任务</div>}

@@ -45,13 +45,12 @@ export type JobSummary = {
   state: string;
   stage: string;
   note?: string | null;
+  sub_progress?: string | null;
   created_at?: string;
   updated_at?: string;
   elapsed_sec?: number | null;
   source?: { kind?: string; url?: string | null };
   options?: Record<string, unknown>;
-  stages_done?: number;
-  stages_total?: number;
   need_aspect_confirm?: boolean;
   next_action?: string;
 };
@@ -89,6 +88,15 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }).then(parse),
+  testSmtp: () =>
+    fetch("/api/settings/smtp-test", { method: "POST" }).then(parse) as Promise<{ ok: boolean; detail: string }>,
+  importDouyinCookie: (force_window = false) =>
+    fetch("/api/settings/douyin-cookie/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force_window }),
+      signal: AbortSignal.timeout(190_000),
+    }).then(parse) as Promise<Record<string, unknown>>,
   probe: (file_path: string) =>
     fetch("/api/probe", {
       method: "POST",
@@ -118,7 +126,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ clip_ids }),
     }).then(parse),
-  finals: (id: string) => fetch(`/api/jobs/${id}/final`, { method: "POST" }).then(parse),
+  finals: (id: string, clip_ids: string[] = []) =>
+    fetch(`/api/jobs/${id}/final`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clip_ids }),
+    }).then(parse),
+  assemble: (id: string) => fetch(`/api/jobs/${id}/assemble`, { method: "POST" }).then(parse),
   cancel: (id: string) => fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then(parse),
   remove: (id: string) => fetch(`/api/jobs/${id}`, { method: "DELETE" }).then(parse),
   resetMock: () => fetch("/api/mock/reset", { method: "POST" }).then(parse),
