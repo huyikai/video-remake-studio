@@ -5,10 +5,11 @@ type Props = {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  footer?: ReactNode;
   className?: string;
 };
 
-export default function Dialog({ title, onClose, children, className }: Props) {
+export default function Dialog({ title, onClose, children, footer, className }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -40,7 +41,8 @@ export default function Dialog({ title, onClose, children, className }: Props) {
             关闭
           </button>
         </div>
-        <div className="min-h-0 overflow-y-auto p-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+        {footer ? <div className="border-t border-line px-5 py-3">{footer}</div> : null}
       </div>
     </div>
   );

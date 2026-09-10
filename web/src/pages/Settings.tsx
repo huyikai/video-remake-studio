@@ -187,7 +187,24 @@ export default function SettingsPage({ onClose }: Props) {
   }
 
   return (
-    <Dialog title="设置" onClose={onClose}>
+    <Dialog
+      title="设置"
+      onClose={onClose}
+      footer={
+        <div className="space-y-2">
+          {msg ? <p className={cn("text-xs", msgWarn ? "text-warn" : "text-ok")}>{msg}</p> : null}
+          {err ? <p className="text-bad">{err}</p> : null}
+          <div className="flex justify-end gap-2">
+            <button type="button" className="px-3 py-2 text-sm text-muted hover:text-text" onClick={onClose}>
+              取消
+            </button>
+            <button type="button" className="rounded bg-tungsten px-4 py-2 text-ink disabled:opacity-40" disabled={saving} onClick={() => { if (form.mode === "real") { setConfirmRealMode(true); } else { void save(); } }}>
+              {saving ? "保存中..." : "保存到本机配置"}
+            </button>
+          </div>
+        </div>
+      }
+    >
       {!form ? (
         <p className="text-muted">{err || "加载设置…"}</p>
       ) : (
@@ -469,16 +486,6 @@ export default function SettingsPage({ onClose }: Props) {
               </label>
             </div>
           </section>
-          {msg ? <p className={msgWarn ? "text-warn" : "text-ok"}>{msg}</p> : null}
-          {err ? <p className="text-bad">{err}</p> : null}
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" className="px-3 py-2 text-sm text-muted hover:text-text" onClick={onClose}>
-              取消
-            </button>
-            <button type="button" className="rounded bg-tungsten px-4 py-2 text-ink disabled:opacity-40" disabled={saving} onClick={() => { if (form.mode === "real") { setConfirmRealMode(true); } else { void save(); } }}>
-              {saving ? "保存中..." : "保存到本机配置"}
-            </button>
-          </div>
         </div>
       )}
 
