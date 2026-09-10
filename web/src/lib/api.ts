@@ -133,6 +133,7 @@ export const api = {
       body: JSON.stringify({ clip_ids }),
     }).then(parse),
   assemble: (id: string) => fetch(`/api/jobs/${id}/assemble`, { method: "POST" }).then(parse),
+  openOutputDir: (id: string) => fetch(`/api/jobs/${id}/open-output-dir`, { method: "POST" }).then(parse),
   cancel: (id: string) => fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then(parse),
   remove: (id: string) => fetch(`/api/jobs/${id}`, { method: "DELETE" }).then(parse),
   resetMock: () => fetch("/api/mock/reset", { method: "POST" }).then(parse),

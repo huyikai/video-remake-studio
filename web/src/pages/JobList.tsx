@@ -3,6 +3,16 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, type EnvPayload, type JobSummary, type MetricsPayload } from "../lib/api";
 import { dispatchPrimaryAction, primaryActionDisabled, primaryActionFromJob, primaryActionHint, primaryActionLabel, showCornerPrimary } from "../lib/pipeline";
 import { cn, deleteJobsConfirmMessage, fmtDur, generatePathLabel, jobDeletable, jobNoteText, jobStateLabel, modeLabel } from "../lib/utils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { useUi } from "../ui";
 
 const STATE: Record<string, string> = {
@@ -41,6 +51,8 @@ export default function JobList() {
   const [checked, setChecked] = useState<string[]>([]);
   const [deleting, setDeleting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmAbandon, setConfirmAbandon] = useState(false);
   const overviewRef = useRef<HTMLElement>(null);
   const { setOpen } = useUi();
 
@@ -125,14 +137,19 @@ export default function JobList() {
     setChecked((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
-  function selectAllDeletable() {
-    setChecked(deletableIds);
+  const allSelected = deletableIds.length > 0 && checked.length === deletableIds.length;
+  const partialSelected = checked.length > 0 && checked.length < deletableIds.length;
+  function toggleSelectAllDeletable() {
+    if (allSelected) {
+      setChecked([]);
+    } else {
+      setChecked(deletableIds);
+    }
   }
 
   async function deleteChecked() {
     const ids = checked.filter((id) => deletableIds.includes(id));
     if (!ids.length) return;
-    if (!window.confirm(deleteJobsConfirmMessage(ids.length))) return;
     setDeleting(true);
     setErr("");
     let ok = 0;
@@ -153,8 +170,13 @@ export default function JobList() {
 
   async function abandonRunning() {
     if (!running || cancelling) return;
-    if (!window.confirm("打断任务并放弃？已有产物会保留。")) return;
+    setConfirmAbandon(true);
+  }
+
+  async function runAbandon() {
+    if (!running || cancelling) return;
     setCancelling(true);
+    setConfirmAbandon(false);
     setErr("");
     try {
       await api.cancel(running);
@@ -206,15 +228,44 @@ export default function JobList() {
             新建
           </button>
         </div>
-        {checked.length ? (
+        {deletableIds.length ? (
           <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-xs">
-            <span className="text-muted">已选 {checked.length}</span>
-            <button type="button" className="rounded border border-line px-2 py-1 text-muted hover:border-tungsten/60 hover:text-text disabled:opacity-40" disabled={!deletableIds.length || deleting} onClick={selectAllDeletable}>
-              全选
+            <button
+              type="button"
+              aria-checked={allSelected ? "true" : partialSelected ? "mixed" : "false"}
+              role="checkbox"
+              className="flex items-center gap-2 rounded border border-line px-2 py-1 text-muted hover:border-tungsten/60 hover:text-text disabled:opacity-40"
+              disabled={deleting}
+              onClick={toggleSelectAllDeletable}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "relative inline-block size-3.5 shrink-0 rounded border bg-surface",
+                  allSelected ? "border-tungsten bg-tungsten" : "border-line",
+                  partialSelected && "border-tungsten bg-tungsten",
+                )}
+              >
+                {allSelected ? (
+                  <span className="absolute inset-0 flex items-center justify-center text-[10px] leading-none text-ink">✓</span>
+                ) : partialSelected ? (
+                  <span className="absolute inset-x-0 top-1/2 h-[2px] -translate-y-1/2 bg-ink" />
+                ) : null}
+              </span>
+              {allSelected ? "取消全选" : "全选"}
             </button>
-            <button type="button" className="rounded border border-bad/40 px-2 py-1 text-bad hover:bg-bad/10 disabled:opacity-40" disabled={!checked.length || deleting} onClick={() => void deleteChecked()}>
-              {deleting ? "删除中..." : "删除"}
-            </button>
+            <span className="text-muted">已选 {checked.length} / 共 {deletableIds.length}</span>
+            <span className="flex-1" />
+            {checked.length ? (
+              <button
+                type="button"
+                className="rounded border border-bad/40 px-2 py-1 text-bad hover:bg-bad/10 disabled:opacity-40"
+                disabled={deleting}
+                onClick={() => setConfirmDelete(true)}
+              >
+                {deleting ? "删除中..." : `删除 (${checked.length})`}
+              </button>
+            ) : null}
           </div>
         ) : null}
         {running ? (
@@ -224,7 +275,7 @@ export default function JobList() {
               type="button"
               className="shrink-0 rounded border border-bad/40 px-2 py-1 text-xs text-bad hover:bg-bad/10 disabled:opacity-40"
               disabled={cancelling}
-              onClick={() => void abandonRunning()}
+              onClick={() => setConfirmAbandon(true)}
             >
               {cancelling ? "放弃中..." : "放弃"}
             </button>
@@ -234,15 +285,14 @@ export default function JobList() {
         <div className="space-y-2">
           {jobs.map((job) => {
             const deletable = jobDeletable(job.state, job.id === running);
+            const isChecked = checked.includes(job.id);
             return (
               <div
                 key={job.id}
                 className={cn("flex gap-2 rounded-lg border border-line bg-surface p-3 hover:border-tungsten/60", active?.id === job.id && "border-tungsten/70 bg-tungsten/10")}
               >
-                <input
-                  type="checkbox"
-                  className="mt-1 size-4 shrink-0 accent-tungsten disabled:opacity-30"
-                  checked={checked.includes(job.id)}
+                <JobCheckbox
+                  checked={isChecked}
                   disabled={!deletable || deleting}
                   title={deletable ? "勾选后可批量删除" : "运行中的任务不能删除"}
                   onChange={() => toggleChecked(job.id)}
@@ -328,6 +378,70 @@ export default function JobList() {
           </p>
         </div>
       </aside>
+
+      <AlertDialog open={confirmDelete} onOpenChange={(open) => { if (!open) setConfirmDelete(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除 {checked.length} 个任务？</AlertDialogTitle>
+            <AlertDialogDescription>{deleteJobsConfirmMessage(checked.length)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-bad text-ink hover:opacity-90"
+              disabled={deleting}
+              onClick={(event) => { event.preventDefault(); void deleteChecked().then(() => setConfirmDelete(false)); }}
+            >
+              {deleting ? "删除中..." : "删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmAbandon} onOpenChange={(open) => { if (!open) setConfirmAbandon(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>放弃运行中的任务？</AlertDialogTitle>
+            <AlertDialogDescription>打断任务并放弃。已有产物会保留。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancelling}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-bad text-ink hover:opacity-90"
+              disabled={cancelling}
+              onClick={(event) => { event.preventDefault(); void runAbandon(); }}
+            >
+              {cancelling ? "放弃中..." : "放弃"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
+  );
+}
+
+function JobCheckbox({
+  checked,
+  disabled,
+  title,
+  onChange,
+  onClick,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  title: string;
+  onChange: () => void;
+  onClick: (event: React.MouseEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <input
+      type="checkbox"
+      className="mt-1 size-4 shrink-0 accent-tungsten disabled:opacity-30"
+      checked={checked}
+      disabled={disabled}
+      title={title}
+      onChange={onChange}
+      onClick={onClick}
+    />
   );
 }

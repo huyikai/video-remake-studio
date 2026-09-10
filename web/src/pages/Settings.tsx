@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
 import Dialog from "../components/Dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 
@@ -47,6 +57,7 @@ export default function SettingsPage({ onClose }: Props) {
   const [msgWarn, setMsgWarn] = useState(false);
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
+  const [confirmRealMode, setConfirmRealMode] = useState(false);
   const [faultText, setFaultText] = useState("{}");
   const [cookieDraft, setCookieDraft] = useState("");
   const [clearCookie, setClearCookie] = useState(false);
@@ -74,7 +85,6 @@ export default function SettingsPage({ onClose }: Props) {
   async function save() {
     if (!form) return;
     setErr("");
-    if (form.mode === "real" && !window.confirm("真实模式会调用真实模型与 GPU，确定切换吗？")) return;
     setSaving(true);
     try {
       let mockFaults: Record<string, unknown> = {};
@@ -420,12 +430,30 @@ export default function SettingsPage({ onClose }: Props) {
             <button type="button" className="px-3 py-2 text-muted" onClick={onClose}>
               取消
             </button>
-            <button type="button" className="rounded bg-tungsten px-4 py-2 text-ink disabled:opacity-40" disabled={saving} onClick={() => void save()}>
+            <button type="button" className="rounded bg-tungsten px-4 py-2 text-ink disabled:opacity-40" disabled={saving} onClick={() => { if (form.mode === "real") { setConfirmRealMode(true); } else { void save(); } }}>
               {saving ? "保存中..." : "保存到本机配置"}
             </button>
           </div>
         </div>
       )}
+
+      <AlertDialog open={confirmRealMode} onOpenChange={(open) => { if (!open) setConfirmRealMode(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>切换到真实模式？</AlertDialogTitle>
+            <AlertDialogDescription>真实模式会调用真实模型与 GPU，请确认环境已就绪。</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={saving}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={saving}
+              onClick={(event) => { event.preventDefault(); setConfirmRealMode(false); void save(); }}
+            >
+              {saving ? "保存中..." : "切换并保存"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
