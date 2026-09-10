@@ -74,7 +74,7 @@ export default function StatusBar() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex max-w-full items-center justify-center gap-3 overflow-hidden rounded-md px-2 py-1.5 text-xs text-muted hover:bg-panel"
+        className="flex max-w-full items-center justify-center gap-3 overflow-hidden rounded-md px-2 py-1.5 text-xs text-text hover:bg-panel"
         title="查看环境与设备"
       >
         <span className="shrink-0 rounded border border-tungsten/50 bg-tungsten/10 px-2 py-0.5 text-tungsten">{modeLabel(mode)}</span>
@@ -95,7 +95,7 @@ export default function StatusBar() {
           >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-base font-semibold">环境与设备</h2>
-              <button type="button" className="text-muted hover:text-text" onClick={() => setOpen(false)}>
+              <button type="button" className="rounded px-2 py-1 text-sm text-muted hover:bg-panel hover:text-text" onClick={() => setOpen(false)}>
                 关闭
               </button>
             </div>

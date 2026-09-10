@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import NewJob from "./pages/NewJob";
 import SettingsPage from "./pages/Settings";
 
@@ -17,7 +18,13 @@ export function useUi() {
 
 export function UiProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<DialogKind>(null);
-  const close = useCallback(() => setOpen(null), []);
+  const nav = useNavigate();
+  const location = useLocation();
+  const close = useCallback(() => {
+    setOpen(null);
+    const onDialogRoute = location.pathname === "/new" || location.pathname === "/settings";
+    if (onDialogRoute) nav(-1);
+  }, [nav, location.pathname]);
   const value = useMemo(() => ({ open, setOpen }), [open]);
   return (
     <UiContext.Provider value={value}>
