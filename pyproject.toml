@@ -35,6 +35,7 @@ vl = [
   "torchcodec>=0.13",
 ]
 sdk = [
+    "anthropic>=0.40",
     "cursor-sdk>=1.0.30",
 ]
 

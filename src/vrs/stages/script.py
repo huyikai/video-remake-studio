@@ -130,6 +130,11 @@ def run_script(settings: Settings, job: dict[str, Any], directory: Path) -> dict
         )
 
         _log(directory, f"开始写英文提示词（{path}，共 {len(clips)} 段）")
+
+        def _report_progress(done: int, total: int, cid: str) -> None:
+            job["note"] = f"写稿中 {done}/{total}（{cid}）"
+            save_status(job, directory)
+
         items = write_prompts(
             settings,
             clips,
@@ -139,6 +144,7 @@ def run_script(settings: Settings, job: dict[str, Any], directory: Path) -> dict
             directory=directory,
             path=path,
             log=lambda text: _log(directory, text),
+            progress=_report_progress,
         )
         if PATH_LOCK_ACROSS.get(path, True):
             cross = check_locks(items)

@@ -96,14 +96,34 @@ def _seed(job_id: str, clip_id: str, quality: str) -> int:
     return int(digest[:8], 16)
 
 
+def _hash_prompt_file(path: Path) -> str:
+    """算 prompt.txt 的 raw-bytes sha1。与 jobview._clip_quality_status 共用同一算法。"""
+    try:
+        return hashlib.sha1(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
 def _clip_ready(path: Path) -> bool:
+    # 文件存在 + 至少 1KB：足以排除空文件、半截文件。
+    # 不再 ffprobe 校验 —— /api/jobs 列表接口会对所有 clip 各 quality 跑一次，
+    # 23 段 × 2 quality = 46 次 ffprobe ≈ 1s 卡顿。失败在 generate 阶段已经记 rec.error，
+    # 残缺文件也被 size < 1024 挡掉，不需要再探针一次。
     if not path.is_file() or path.stat().st_size < 1024:
+        return False
+    return True
+
+
+def _clip_valid(path: Path) -> bool:
+    """比 _clip_ready 多一步 ffprobe：给 stage gate 和 generate loop 用。
+    残缺 mp4（>=1KB 但 moov 缺失/截断）会被这一步拦下，避免被推进到 finish/邮件。
+    不在 list endpoint 调用：每次 /api/jobs 会跑 46 次 ffprobe。"""
+    if not _clip_ready(path):
         return False
     try:
         probe_video(path)
         return True
     except ProbeError:
-        path.unlink(missing_ok=True)
         return False
 
 
@@ -180,6 +200,21 @@ def quality_complete(
     quality: str,
     path: str | None = None,
 ) -> bool:
+    path = normalize_generate_path(path) if path else job_generate_path(directory)
+    root = clip_output_dir(directory, path, quality)
+    # 用 _clip_valid（ffprobe）而不仅 _clip_ready：stage gate / finish 阶段不能放过残缺 mp4。
+    # list endpoint 走 _clip_ready（size-only），见 jobview._quality_flags。
+    return bool(clips) and all(_clip_valid(root / f"{c['id']}.mp4") for c in clips)
+
+
+def quality_present(
+    directory: Path,
+    clips: list[dict[str, Any]],
+    quality: str,
+    path: str | None = None,
+) -> bool:
+    """size-only 版 quality_complete：给 list endpoint（_quality_flags）用，
+    避免每次 /api/jobs 跑 46 次 ffprobe。stage gate 必须用 quality_complete。"""
     path = normalize_generate_path(path) if path else job_generate_path(directory)
     root = clip_output_dir(directory, path, quality)
     return bool(clips) and all(_clip_ready(root / f"{c['id']}.mp4") for c in clips)
@@ -287,15 +322,31 @@ def run_generate(
             raise_if_cancelled(directory)
             clip_id = str(clip["id"])
             dest = dest_dir / f"{clip_id}.mp4"
-            if _clip_ready(dest):
+            if _clip_valid(dest):
                 skipped += 1
                 rec = (progress["clips"].setdefault(clip_id, {})).setdefault(quality, {})
-                rec.update({"status": "done", "file": f"{rel_dir}/{clip_id}.mp4"})
+                # 与下方实际生成路径保持一致：即便跳过也写入 prompt_hash，
+                # 否则这条 clip 永久进 jobview 的"无 hash → 未知"分支。
+                skipped_item = prompt_index.get(clip_id) or {}
+                skipped_path = directory / str(
+                    skipped_item.get("prompt") or f"prompts/{clip_id}.txt"
+                )
+                rec.update(
+                    {
+                        "status": "done",
+                        "file": f"{rel_dir}/{clip_id}.mp4",
+                        "prompt_hash": _hash_prompt_file(skipped_path),
+                    }
+                )
                 continue
             item = prompt_index.get(clip_id)
             if item is None:
                 raise GenerateError(f"{clip_id} 在 prompts.json 里没有")
             text = _prompt_text(directory, item, negative)
+            # 与 jobview._clip_quality_status / jobops._backfill_prompt_hash 保持一致：
+            # 用磁盘上 prompt.txt 的原始字节算 hash，不要 .strip()（_prompt_text 已 strip，
+            # 但 assemble_txt 会补尾换行，三处算法必须统一）。
+            prompt_path = directory / str(item.get("prompt") or f"prompts/{clip_id}.txt")
             seconds = float(clip["h3_seconds"])
             timeout = _clip_timeout(settings, seconds, int(params["steps"]))
             image_path = _ensure_keyframe(clip, job, directory) if wants_image else None
@@ -334,6 +385,7 @@ def run_generate(
                             "status": "done",
                             "file": f"{rel_dir}/{clip_id}.mp4",
                             "prompt_id": prompt_id,
+                            "prompt_hash": _hash_prompt_file(prompt_path),
                             "attempts": attempt,
                         }
                     )

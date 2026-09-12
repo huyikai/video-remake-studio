@@ -450,7 +450,7 @@ def run_understand(settings: Settings, job: dict[str, Any], directory: Path) -> 
             n_win = len(beats.get("windows") or [])
             _log(directory, f"拍表 windows={n_win} errors={n_err}")
             if n_win == 0 or n_err:
-                raise UnderstandWaiting(f"视觉理解未完成：{n_err}/{n_win} 个窗口失败，请检查 Cursor SDK 后重试")
+                raise UnderstandWaiting(f"视觉理解未完成：{n_err}/{n_win} 个窗口失败，请检查 VL SDK 后重试")
             unload_vl()
             if n_win < 3:
                 raise UnderstandWaiting("拍表窗太少，resume 会重试")

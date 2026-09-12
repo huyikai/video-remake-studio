@@ -12,7 +12,7 @@ from vrs.media import extract_frame_at
 from vrs.probe import which_ffmpeg
 from vrs.settings import Settings
 from vrs.textjson import parse_json_payload
-from vrs.vlclient import CURSOR_SDK_KIND, VLError, analyze_image, analyze_images, resolve_vl, unload_vl
+from vrs.vlclient import VLError, _SDK_KINDS, analyze_image, analyze_images, resolve_vl, unload_vl
 
 WINDOW = 3.0
 HOP = 2.5
@@ -438,7 +438,7 @@ def run_beat_table(
                 continue
         emit(len(rows), start, end)
         cell_paths = [frames[t] for t in times if t in frames]
-        sdk = str(resolve_vl(settings).get("kind") or "") == CURSOR_SDK_KIND
+        sdk = str(resolve_vl(settings).get("kind") or "") in _SDK_KINDS
         win: dict[str, Any] = {
             "start": start,
             "end": end,

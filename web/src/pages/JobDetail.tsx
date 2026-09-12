@@ -101,7 +101,20 @@ type JobDetailData = {
 
 type PreviewKind = "source" | "draft" | "final";
 type BatchKind = "scripts" | "ai" | "videos" | null;
-type ClipBiz = "ready" | "pending" | "generating" | "failed" | "stale";
+type ClipBiz = "ready" | "pending" | "no_script" | "generating" | "failed" | "stale" | "rewriting" | "rewritten";
+type AiBatchClip = {
+  state: "pending" | "done" | "failed";
+  error?: string | null;
+  preview?: { script_zh: string; prompt_txt: string; review_md: string; prompt_json: Record<string, unknown> } | null;
+};
+type AiBatchStatus = {
+  state: string;
+  requirement?: string;
+  clip_ids?: string[];
+  clips?: Record<string, AiBatchClip>;
+  saved?: string[];
+  skipped?: string[];
+};
 type DetailKind = "understand" | "precheck" | "progress" | null;
 type RewPreview = {
   clip_id: string;
@@ -130,7 +143,7 @@ function clipBiz(clip: ClipRow, quality: "draft" | "final"): ClipBiz {
   const rec = clip[quality];
   if (rec.status === "running") return "generating";
   if (rec.status === "error") return "failed";
-  if (clip.has_script === false) return rec.status === "done" ? "stale" : "pending";
+  if (clip.has_script === false) return rec.status === "done" ? "stale" : "no_script";
   if (rec.status === "done") {
     if (rec.dirty || (quality === "final" && clip.draft.dirty)) return "stale";
     return "ready";
@@ -143,13 +156,18 @@ function clipBizLabel(status: ClipBiz) {
   if (status === "generating") return "生成中";
   if (status === "failed") return "失败";
   if (status === "stale") return "脚本已改";
-  return "待生成";
+  if (status === "no_script") return "待写脚本";
+  if (status === "rewriting") return "AI 改写中";
+  if (status === "rewritten") return "新稿待保存";
+  return "待出片";
 }
 
 function clipBizTone(status: ClipBiz) {
   if (status === "ready") return "text-ok";
-  if (status === "pending" || status === "stale") return "text-warn";
+  if (status === "pending" || status === "stale" || status === "rewritten") return "text-warn";
   if (status === "failed") return "text-bad";
+  if (status === "rewriting") return "text-tungsten";
+  if (status === "no_script") return "text-muted";
   return "text-tungsten";
 }
 
@@ -290,6 +308,9 @@ export default function JobDetail() {
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiScope, setAiScope] = useState<string[]>([]);
+  const [aiPhase, setAiPhase] = useState<"input" | "running" | "review">("input");
+  const [aiBatch, setAiBatch] = useState<AiBatchStatus | null>(null);
+  const [batchPicked, setBatchPicked] = useState<string[]>([]);
   const [rewPreview, setRewPreview] = useState<RewPreview | null>(null);
   const [rewBusy, setRewBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
@@ -423,7 +444,7 @@ export default function JobDetail() {
   const clips = job?.clips || [];
   const current = clips.find((clip) => clip.id === clipId) || null;
   const progressStage = job ? currentProgressStage(job) : "download";
-  const shownStage = job?.running ? progressStage : (viewStage ?? progressStage);
+  const shownStage = viewStage ?? progressStage;
   const unsaved = Boolean(clipId) && scriptZh !== savedZh;
   const sourceReady = Boolean(job?.media?.source);
 
@@ -511,14 +532,6 @@ export default function JobDetail() {
     if (shownStage === "finish") {
       return;
     }
-    if (job?.running) {
-      if (shownStage === "clips") {
-        setPreview(clip.final.status === "done" ? "final" : clip.draft.status === "done" ? "draft" : "source");
-      } else if (shownStage === "draft") {
-        setPreview(clip.draft.status === "done" ? "draft" : "source");
-      }
-      return;
-    }
     const selectingFromScript = shownStage === "script";
     if (selectingFromScript) {
       setViewStage("script");
@@ -536,9 +549,16 @@ export default function JobDetail() {
       return;
     }
     const status = clipBiz(clip, "draft");
-    if (status === "pending" || status === "failed") {
+    if (status === "pending" || status === "no_script" || status === "failed" || status === "stale") {
+      // 脚本已改/还没脚本/失败的段：直接进编辑器看当前稿
       setViewStage("script");
       setEditing(true);
+      return;
+    }
+    if (aiBatch?.clips?.[clip.id]?.state === "done") {
+      // 有未保存的批量改写新稿：打开预览引导保存
+      setAiOpen(true);
+      void resumeAiReview();
       return;
     }
     setViewStage(clip.final.status === "done" ? "clips" : "draft");
@@ -549,6 +569,108 @@ export default function JobDetail() {
   function editScript() {
     setViewStage("script");
     setEditing(true);
+  }
+
+  async function startBatchAi() {
+    if (!aiPrompt.trim() || aiScope.length < 2) return;
+    setErr("");
+    try {
+      await api.startRewriteBatch(id, { clip_ids: aiScope, requirement: aiPrompt.trim() });
+      setAiWatch(true);
+      setAiPhase("running");
+      if ("Notification" in window && Notification.permission === "default") {
+        void Notification.requestPermission();
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  const [aiWatch, setAiWatch] = useState(true);
+  const prevBatchState = useRef("");
+  useEffect(() => {
+    let stop = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const status = (await api.rewriteBatchStatus(id, false)) as AiBatchStatus;
+        if (stop) return;
+        if (status.state === "none") {
+          setAiWatch(false);
+          setAiBatch(null);
+          prevBatchState.current = "";
+          return;
+        }
+        if (prevBatchState.current === "running" && status.state === "ready") {
+          setMsg("批量 AI 改写完成，请核对并保存新稿");
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification("批量 AI 改写完成", { body: "请核对并保存新稿" });
+          }
+        }
+        prevBatchState.current = status.state;
+        setAiBatch(status);
+        if (aiPhase === "running" && status.state === "ready") {
+          const full = (await api.rewriteBatchStatus(id, true)) as AiBatchStatus;
+          if (stop) return;
+          setAiBatch(full);
+          setBatchPicked(Object.entries(full.clips || {}).filter(([, rec]) => rec.state === "done").map(([cid]) => cid));
+          setAiPhase("review");
+        }
+      } catch {
+        /* 轮询失败下次重试 */
+      }
+      if (!stop) timer = window.setTimeout(tick, 4000);
+    };
+    void tick();
+    return () => {
+      stop = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [id, aiWatch, aiPhase]);
+
+  async function resumeAiReview() {
+    try {
+      const full = (await api.rewriteBatchStatus(id, true)) as AiBatchStatus;
+      setAiBatch(full);
+      setBatchPicked(Object.entries(full.clips || {}).filter(([, rec]) => rec.state === "done").map(([cid]) => cid));
+      setAiPhase(full.state === "ready" ? "review" : "running");
+    } catch {
+      /* 忽略 */
+    }
+  }
+
+  async function saveBatchAi() {
+    if (!batchPicked.length) return;
+    setErr("");
+    try {
+      const res = (await api.saveRewriteBatch(id, batchPicked)) as { saved?: string[]; skipped?: string[] };
+      setAiOpen(false);
+      setAiPhase("input");
+      setAiBatch(null);
+      setBatchKind(null);
+      setMsg(`已保存 ${(res.saved || []).length} 段新脚本${(res.skipped || []).length ? `，${(res.skipped || []).length} 段跳过` : ""}，这些片段待重新出试片`);
+      refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  async function discardBatchAi() {
+    try {
+      await api.discardRewriteBatch(id);
+    } catch {
+      /* 忽略 */
+    }
+    setAiBatch(null);
+    setAiPhase("input");
+  }
+
+  function aiBatchCounts(status: AiBatchStatus | null) {
+    const recs = Object.values(status?.clips || {});
+    const done = recs.filter((rec) => rec.state === "done").length;
+    const failed = recs.filter((rec) => rec.state === "failed").length;
+    const total = recs.length;
+    return { done, failed, total };
   }
 
   async function previewRewrite(payload: Record<string, unknown>) {
@@ -632,6 +754,20 @@ export default function JobDetail() {
         setAiScope(picked);
         setBatchKind(null);
         setAiOpen(true);
+        // 恢复未完成的批量改写：ready → 直接进预览勾选，running → 回到进度
+        void api.rewriteBatchStatus(id, false).then((raw) => {
+          const status = raw as AiBatchStatus;
+          if (status.state === "ready" && picked.length > 1) {
+            void api.rewriteBatchStatus(id, true).then((rawFull) => {
+              const full = rawFull as AiBatchStatus;
+              setAiBatch(full);
+              setBatchPicked(Object.entries(full.clips || {}).filter(([, rec]) => rec.state === "done").map(([cid]) => cid));
+              setAiPhase("review");
+            }).catch(() => {});
+          } else if (status.state === "running" && picked.length > 1) {
+            setAiPhase("running");
+          }
+        }).catch(() => {});
         return;
       }
       if (batchKind === "videos") {
@@ -729,25 +865,27 @@ export default function JobDetail() {
   const coverSrc = fileUrl(job.id, job.media?.cover);
   const primaryDisabled = Boolean(busyAction) || primaryActionDisabled(job);
   const batchInFooter = shownStage === "download" || shownStage === "pagemeta" || shownStage === "understand" || shownStage === "precheck";
-  const batchMenu = showBatch ? (
-    <div className="relative" ref={batchRef}>
-      <button type="button" className="rounded-md border border-line px-3 py-2 text-sm text-muted hover:border-tungsten/60 hover:text-text" onClick={() => setBatchOpen((open) => !open)}>批量操作</button>
-      {batchOpen ? (
-        <div className="absolute right-0 bottom-full z-40 mb-2 w-52 rounded-lg border border-line bg-surface p-1 shadow-xl">
-          {canBatchScripts ? (
-            <button type="button" disabled={generateLocked} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={generateLocked ? "任务正在处理" : undefined} onClick={() => openBatch("scripts")}>{generateLocked ? "批量生成脚本（处理中）" : "批量生成脚本"}</button>
-          ) : null}
-          {canBatchAi ? (
-            <button type="button" className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text" onClick={() => openBatch("ai")}>批量修改脚本</button>
-          ) : null}
-          {canBatchVideos ? (
-            <button type="button" disabled={generateLocked} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={generateLocked ? "任务正在处理" : undefined} onClick={() => openBatch("videos")}>{generateLocked ? "批量生成视频（处理中）" : "批量生成视频"}</button>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
-  ) : null;
-  const workspaceBatch = batchInFooter ? null : batchMenu;
+  // 顶栏位置菜单向下弹（bottom-full 会弹到视口外，看起来"点了没反应"），底栏保持向上弹。
+  const renderBatchMenu = (openUp: boolean) =>
+    showBatch ? (
+      <div className="relative" ref={batchRef}>
+        <button type="button" className="rounded-md border border-line px-3 py-2 text-sm text-muted hover:border-tungsten/60 hover:text-text" onClick={() => setBatchOpen((open) => !open)}>批量操作</button>
+        {batchOpen ? (
+          <div className={cn("absolute right-0 z-40 w-52 rounded-lg border border-line bg-surface p-1 shadow-xl", openUp ? "bottom-full mb-2" : "top-full mt-2")}>
+            {canBatchScripts ? (
+              <button type="button" disabled={generateLocked} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={generateLocked ? "任务正在处理" : undefined} onClick={() => openBatch("scripts")}>{generateLocked ? "批量生成脚本（处理中）" : "批量生成脚本"}</button>
+            ) : null}
+            {canBatchAi ? (
+              <button type="button" className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text" onClick={() => openBatch("ai")}>批量修改脚本</button>
+            ) : null}
+            {canBatchVideos ? (
+              <button type="button" disabled={generateLocked} className="w-full rounded px-3 py-2 text-left text-sm text-muted hover:bg-panel hover:text-text disabled:opacity-40" title={generateLocked ? "任务正在处理" : undefined} onClick={() => openBatch("videos")}>{generateLocked ? "批量生成视频（处理中）" : "批量生成视频"}</button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    ) : null;
+  const workspaceBatch = batchInFooter ? null : renderBatchMenu(true);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-bg">
@@ -773,6 +911,26 @@ export default function JobDetail() {
                 <span className={cn("font-medium", stageTone(job.state))}>{jobStateLabel(job.state)}</span>
               )}
               {dirty.length ? <span className="text-warn">未应用 {dirty.length}</span> : null}
+              {(() => {
+                const st = aiBatch?.state;
+                if (st === "running") {
+                  const recs = Object.values(aiBatch?.clips || {});
+                  const done = recs.filter((rec) => rec.state !== "pending").length;
+                  return (
+                    <button type="button" className="rounded px-2 py-0.5 text-tungsten hover:bg-tungsten/10" onClick={() => { setAiOpen(true); setAiPhase("running"); }}>
+                      AI 改写中 {done}/{recs.length}
+                    </button>
+                  );
+                }
+                if (st === "ready") {
+                  return (
+                    <button type="button" className="rounded px-2 py-0.5 font-medium text-warn hover:bg-warn/10" onClick={() => { setAiOpen(true); void resumeAiReview(); }}>
+                      AI 改写完成，待保存
+                    </button>
+                  );
+                }
+                return null;
+              })()}
               {job.running ? <button type="button" className="rounded px-2 py-0.5 text-tungsten hover:bg-tungsten/10" onClick={() => setDetail("progress")}>处理中</button> : null}
               {err ? <span className="max-w-xs truncate text-bad" title={err}>{err}</span> : null}
               {msg ? <span className="max-w-xs truncate text-ok" title={msg}>{msg}</span> : null}
@@ -826,7 +984,8 @@ export default function JobDetail() {
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
             {clips.map((clip) => {
-              const status = clipBiz(clip, clipQualityForStage(shownStage));
+              const bRec = aiBatch?.clips?.[clip.id];
+              const status: ClipBiz = bRec?.state === "done" ? "rewritten" : bRec && aiBatch?.state === "running" ? "rewriting" : clipBiz(clip, clipQualityForStage(shownStage));
               return (
                 <button key={clip.id} type="button" disabled={rewBusy || saveBusy} title={rewBusy || saveBusy ? "正在处理英文脚本，请稍候" : undefined} className={cn("mb-1.5 w-full rounded-lg border px-3 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-50", clip.id === clipId ? "border-tungsten/60 bg-tungsten/10" : "border-transparent hover:border-line hover:bg-surface")} onClick={() => selectClip(clip.id)}>
                   <div className="flex items-center justify-between gap-2">
@@ -861,7 +1020,7 @@ export default function JobDetail() {
               {jobNoteText(job.note) ? <p className="min-w-0 truncate text-xs text-muted">{jobNoteText(job.note)}</p> : null}
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {batchInFooter ? batchMenu : null}
+              {batchInFooter ? renderBatchMenu(false) : null}
               {(() => {
                 const action = primaryActionFromJob(job);
                 if (!["download", "pagemeta", "understand", "script", "precheck", "retry"].includes(action)) return null;
@@ -997,21 +1156,91 @@ export default function JobDetail() {
       ) : null}
 
       {aiOpen ? (
-        <Dialog title={aiScope.length > 1 ? `AI 修改脚本 · ${aiScope.length} 个片段` : `AI 修改脚本${aiScope[0] ? ` · ${aiScope[0]}` : ""}`} onClose={() => setAiOpen(false)}>
-          <p className="mb-3 text-sm text-muted">描述你希望怎么改。确认后先生成预览，核对无误再保存；不会立刻覆盖原脚本，也不会自动生成视频。</p>
-          <textarea className="h-32 w-full rounded-md border border-line bg-panel p-3 text-sm" value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="例如：加快镜头节奏，保留人物外观和原对白。" />
-          {aiScope.length > 1 ? <p className="mt-3 text-xs text-warn">批量 AI 修改尚未接入，请先对单个片段操作。</p> : null}
-          <div className="mt-5 flex justify-end gap-2">
-            <button type="button" className="rounded-md px-3 py-2 text-sm text-muted" onClick={() => setAiOpen(false)}>取消</button>
-            <button
-              type="button"
-              className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:opacity-50"
-              disabled={!aiPrompt.trim() || aiScope.length > 1 || rewBusy}
-              onClick={() => { setAiOpen(false); if (clipId) void previewRewrite({ requirement: aiPrompt }); }}
-            >
-              {rewBusy ? "生成中..." : "生成预览"}
-            </button>
-          </div>
+        <Dialog title={aiPhase === "review" ? `批量改写结果 · 已选 ${batchPicked.length} 段` : aiScope.length > 1 ? `AI 修改脚本 · ${aiScope.length} 个片段` : `AI 修改脚本${aiScope[0] ? ` · ${aiScope[0]}` : ""}`} onClose={() => setAiOpen(false)} className={aiPhase === "review" ? "max-w-2xl" : undefined}>
+          {aiPhase === "running" ? (
+            <div>
+              <p className="text-sm text-muted">后台逐段改写中（每段需数分钟），可以关闭弹窗，改写继续进行。</p>
+              {(() => {
+                const { done, failed, total } = aiBatchCounts(aiBatch);
+                const pct = total ? Math.round(((done + failed) / total) * 100) : 0;
+                const failedIds = Object.entries(aiBatch?.clips || {}).filter(([, rec]) => rec.state === "failed").map(([cid, rec]) => `${cid}：${rec.error || "失败"}`);
+                return (
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between text-sm">
+                      <span>已改写 {done + failed}/{total}</span>
+                      <span className="text-muted">{pct}%</span>
+                    </div>
+                    <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-panel">
+                      <div className="h-full rounded-full bg-tungsten transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                    {failedIds.length ? (
+                      <div className="mt-3 space-y-1 text-xs text-bad">
+                        {failedIds.map((line) => <p key={line}>{line}</p>)}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
+              <div className="mt-5 flex justify-end">
+                <button type="button" className="rounded-md px-3 py-2 text-sm text-muted" onClick={() => setAiOpen(false)}>后台运行，关闭弹窗</button>
+              </div>
+            </div>
+          ) : aiPhase === "review" ? (
+            <div>
+              <p className="mb-3 text-sm text-muted">核对每段的新稿摘要，勾选要保存的段落。保存后这些片段标记为待重新出试片。</p>
+              <div className="max-h-[50vh] space-y-2 overflow-y-auto pr-1">
+                {Object.entries(aiBatch?.clips || {}).map(([cid, rec]) => (
+                  <label key={cid} className={cn("mb-2 flex items-start gap-3 rounded-lg border p-3", rec.state === "failed" ? "cursor-not-allowed opacity-60 border-bad/40" : "cursor-pointer", batchPicked.includes(cid) ? "border-tungsten/50 bg-tungsten/10" : "border-line")}>
+                    <input type="checkbox" className="mt-1" disabled={rec.state !== "done"} checked={batchPicked.includes(cid)} onChange={() => setBatchPicked(rec.state === "done" ? (batchPicked.includes(cid) ? batchPicked.filter((item) => item !== cid) : [...batchPicked, cid]) : batchPicked)} />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-sm">{cid}</span>
+                        <span className={cn("text-xs", rec.state === "failed" ? "text-bad" : "text-ok")}>{rec.state === "done" ? "改写完成" : "改写失败"}</span>
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-muted">
+                        {rec.state === "failed"
+                          ? rec.error || "改写失败"
+                          : (rec.preview?.script_zh || "").replace(/\s+/g, " ").slice(0, 160) + "…"}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-2">
+                <button type="button" className="text-sm text-bad hover:underline" onClick={() => void discardBatchAi()}>全部放弃</button>
+                <div className="flex gap-2">
+                  <button type="button" className="rounded-md px-3 py-2 text-sm text-muted" onClick={() => setAiOpen(false)}>稍后处理</button>
+                  <button type="button" className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:opacity-50" disabled={!batchPicked.length} onClick={() => void saveBatchAi()}>
+                    保存所选（{batchPicked.length}）
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="mb-3 text-sm text-muted">描述你希望怎么改。确认后先生成预览，核对无误再保存；不会立刻覆盖原脚本，也不会自动生成视频。</p>
+              <textarea className="h-32 w-full rounded-md border border-line bg-panel p-3 text-sm" value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="例如：加快镜头节奏，保留人物外观和原对白。" />
+              {aiScope.length > 1 ? <p className="mt-3 text-xs text-warn">批量模式：{aiScope.length} 个片段会依次改写（每段需数分钟），完成后逐段预览、勾选保存。</p> : null}
+              <div className="mt-5 flex justify-end gap-2">
+                <button type="button" className="rounded-md px-3 py-2 text-sm text-muted" onClick={() => setAiOpen(false)}>取消</button>
+                <button
+                  type="button"
+                  className="rounded-md bg-tungsten px-4 py-2 text-sm text-ink disabled:opacity-50"
+                  disabled={!aiPrompt.trim() || !aiScope.length || rewBusy}
+                  onClick={() => {
+                    if (aiScope.length > 1) {
+                      void startBatchAi();
+                      return;
+                    }
+                    setAiOpen(false);
+                    if (clipId) void previewRewrite({ requirement: aiPrompt });
+                  }}
+                >
+                  {rewBusy ? "生成中..." : aiScope.length > 1 ? `开始批量改写（${aiScope.length} 段）` : "生成预览"}
+                </button>
+              </div>
+            </>
+          )}
         </Dialog>
       ) : null}
 
@@ -1032,6 +1261,25 @@ export default function JobDetail() {
       ) : null}
       {detail === "progress" ? (
         <Dialog title="处理进度" onClose={() => setDetail(null)}>
+          {aiBatch?.state === "running" || aiBatch?.state === "ready" ? (
+            <div className="mb-4 rounded-md border border-tungsten/40 bg-tungsten/10 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium">AI 批量改写{aiBatch.state === "ready" ? "完成，待保存" : "进行中"}</span>
+                <span className="text-muted">{(() => { const recs = Object.values(aiBatch.clips || {}); return `${recs.filter((r) => r.state !== "pending").length}/${recs.length}`; })()}</span>
+              </div>
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-surface">
+                <div className="h-full rounded-full bg-tungsten transition-all" style={{ width: `${(() => { const recs = Object.values(aiBatch.clips || {}); return recs.length ? Math.round((recs.filter((r) => r.state !== "pending").length / recs.length) * 100) : 0; })()}%` }} />
+              </div>
+              {Object.entries(aiBatch.clips || {}).filter(([, rec]) => rec.state === "failed").map(([cid, rec]) => (
+                <p key={cid} className="mt-2 text-xs text-bad">{cid}：{rec.error || "失败"}</p>
+              ))}
+              <div className="mt-3 flex justify-end">
+                <button type="button" className="text-xs text-tungsten hover:underline" onClick={() => { setDetail(null); setAiOpen(true); if (aiBatch.state === "ready") void resumeAiReview(); }}>
+                  {aiBatch.state === "ready" ? "去核对保存" : "查看详情"}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <p className="text-sm text-muted">{jobNoteText(job.note) || "任务正在处理。"}</p>
           <div className="mt-3 max-h-[50vh] overflow-y-auto text-xs text-muted">
             {(job.events || []).slice().reverse().map((event, index) => (
@@ -1850,8 +2098,15 @@ function ClipPicker({
       </label>
     );
   }
+  const selectable = clips.filter((clip) => !blocked(clip));
   return (
     <div>
+      {clips.length ? (
+        <div className="mb-2 flex items-center justify-end gap-3">
+          <button type="button" className="text-xs text-tungsten hover:underline" onClick={() => setPicked(selectable.map((clip) => clip.id))}>全选 ({selectable.length})</button>
+          <button type="button" className="text-xs text-muted hover:underline" onClick={() => setPicked([])}>清空</button>
+        </div>
+      ) : null}
       {rec.map((clip) => row(clip, true))}
       {others.length ? (
         <div className="mt-3">

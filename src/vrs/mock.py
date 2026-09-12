@@ -6,6 +6,7 @@ Mock 保留真实任务目录、阶段状态和文件协议，但把所有模型
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -159,6 +160,15 @@ def _cut_mock_clip(source: Path, dest: Path, clip: dict[str, Any], *, log_path: 
     need = float(clip.get("source_seconds") or (t1 - t0))
     if float(probed["duration"]) < need - 0.3:
         raise MockError(f"{clip.get('id')} 切片时长 {probed['duration']:.2f}s，期望约 {need:.2f}s")
+
+
+def _mock_prompt_hash(directory: Path, clip_id: str) -> str:
+    """与 stages/generate.py 同算法（raw-bytes sha1 of prompts/{id}.txt）。"""
+    path = directory / "prompts" / f"{clip_id}.txt"
+    try:
+        return hashlib.sha1(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _fail(job: dict[str, Any], directory: Path, stage: str, message: str) -> None:
@@ -548,7 +558,13 @@ def _generate(settings: Settings, job: dict[str, Any], directory: Path, quality:
         if wanted is not None and clip_id not in wanted:
             continue
         if dest.is_file() and wanted is None:
-            rec.update({"status": "done", "file": f"generate/{path}/{quality}/{clip_id}.mp4"})
+            rec.update(
+                {
+                    "status": "done",
+                    "file": f"generate/{path}/{quality}/{clip_id}.mp4",
+                    "prompt_hash": _mock_prompt_hash(directory, clip_id),
+                }
+            )
             continue
         if _fault(job, directory, "generate", clip_id):
             return False
@@ -563,7 +579,15 @@ def _generate(settings: Settings, job: dict[str, Any], directory: Path, quality:
         except Exception as exc:  # noqa: BLE001
             _fail(job, directory, "generate", f"Mock 切片失败：{exc}")
             return False
-        rec.update({"status": "done", "file": f"generate/{path}/{quality}/{clip_id}.mp4", "prompt_id": f"mock-{job['id']}-{clip_id}-{quality}", "attempts": 1})
+        rec.update(
+            {
+                "status": "done",
+                "file": f"generate/{path}/{quality}/{clip_id}.mp4",
+                "prompt_id": f"mock-{job['id']}-{clip_id}-{quality}",
+                "prompt_hash": _mock_prompt_hash(directory, clip_id),
+                "attempts": 1,
+            }
+        )
         progress.setdefault("events", []).append({"at": utcnow(), "kind": "clip_done", "clip_id": clip_id, "quality": quality, "model": "mock:minimax-h3"})
         _write_json(directory / "generate.json", progress)
         made += 1
@@ -856,11 +880,13 @@ def _generate_seed_media(settings: Settings, job: dict[str, Any], directory: Pat
     trim_and_concat(clips, src_dir=dest, dest=output, work_dir=dest / "trimmed-seed", log_path=log_path)
     progress = _load(directory / "generate.json") or {"generate_path": path, "clips": {}}
     for clip in clips:
-        progress.setdefault("clips", {}).setdefault(str(clip["id"]), {})[quality] = {
+        cid = str(clip["id"])
+        progress.setdefault("clips", {}).setdefault(cid, {})[quality] = {
             "status": "done",
-            "file": f"generate/{path}/{quality}/{clip['id']}.mp4",
+            "file": f"generate/{path}/{quality}/{cid}.mp4",
             "attempts": 1,
-            "prompt_id": f"mock-seed-{quality}-{clip['id']}",
+            "prompt_id": f"mock-seed-{quality}-{cid}",
+            "prompt_hash": _mock_prompt_hash(directory, cid),
         }
     progress[quality] = {"status": "done", "concat": f"output/{path}/{quality}.mp4", "clips": len(clips)}
     _write_json(directory / "generate.json", progress)

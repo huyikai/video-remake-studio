@@ -132,6 +132,22 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ clip_ids }),
     }).then(parse),
+  startRewriteBatch: (id: string, body: { clip_ids: string[]; requirement: string }) =>
+    fetch(`/api/jobs/${id}/rewrite-batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(parse) as Promise<Record<string, unknown>>,
+  rewriteBatchStatus: (id: string, full = false) =>
+    fetch(`/api/jobs/${id}/rewrite-batch?full=${full ? 1 : 0}`).then(parse) as Promise<Record<string, unknown>>,
+  saveRewriteBatch: (id: string, clip_ids: string[]) =>
+    fetch(`/api/jobs/${id}/rewrite-batch/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clip_ids }),
+    }).then(parse) as Promise<Record<string, unknown>>,
+  discardRewriteBatch: (id: string) =>
+    fetch(`/api/jobs/${id}/rewrite-batch/discard`, { method: "POST" }).then(parse),
   assemble: (id: string) => fetch(`/api/jobs/${id}/assemble`, { method: "POST" }).then(parse),
   openOutputDir: (id: string) => fetch(`/api/jobs/${id}/open-output-dir`, { method: "POST" }).then(parse),
   cancel: (id: string) => fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then(parse),

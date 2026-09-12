@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from vrs.lock import JobLock
 from vrs.passb import assemble_zh
 from vrs.promptcheck import iter_clip_speech
 from vrs.settings import Settings
-from vrs.stages.generate import clip_output_dir, job_generate_path, quality_complete
+from vrs.stages.generate import clip_output_dir, job_generate_path, quality_present
 
 
 def _load(path: Path) -> Any:
@@ -117,15 +118,32 @@ def _clip_quality_status(
     dest = clip_output_dir(directory, path, quality) / f"{clip_id}.mp4"
     rec = ((progress.get("clips") or {}).get(clip_id) or {}).get(quality) or {}
     prompt = directory / "prompts" / f"{clip_id}.txt"
-    dirty = _exists(dest) and _exists(prompt) and _mtime(prompt) > _mtime(dest) + 0.5
+    dest_ok = _exists(dest)
+    prompt_ok = _exists(prompt)
+    dirty = False
+    if dest_ok and prompt_ok:
+        recorded_hash = str(rec.get("prompt_hash") or "")
+        if recorded_hash:
+            # 视频生成时记录的 prompt hash；当前 prompt.txt 与之不同 = 视频生成后被改过。
+            try:
+                current_hash = hashlib.sha1(prompt.read_bytes()).hexdigest()
+            except OSError:
+                # prompt.txt 在 _exists 之后被删除/权限翻转 —— 别让一个 clip 的瞬时
+                # 缺失把整个 /api/jobs 接口拉成 500。降级为 unknown（dirty）。
+                current_hash = ""
+            dirty = bool(recorded_hash) and current_hash != recorded_hash
+        else:
+            # 没有 prompt_hash 的旧 clip（pre-diff 任务）：没法验证，保守标记为 dirty=true。
+            # 用户至少能看到"该段状态未确认"，等下次 generate 自然写入正确 hash。
+            dirty = True
     status = rec.get("status")
-    if _exists(dest):
+    if dest_ok:
         status = "done"
     elif status not in {"running", "error"}:
         status = "pending"
     return {
         "status": status,
-        "file": f"generate/{path}/{quality}/{clip_id}.mp4" if _exists(dest) else None,
+        "file": f"generate/{path}/{quality}/{clip_id}.mp4" if dest_ok else None,
         "error": rec.get("error"),
         "dirty": dirty,
         "prompt_id": rec.get("prompt_id"),
@@ -161,8 +179,8 @@ def _quality_flags(directory: Path, job: dict[str, Any]) -> tuple[bool, bool]:
     except Exception:
         return False, False
     return (
-        quality_complete(directory, clips, "draft", path=path),
-        quality_complete(directory, clips, "final", path=path),
+        quality_present(directory, clips, "draft", path=path),
+        quality_present(directory, clips, "final", path=path),
     )
 
 
@@ -408,8 +426,8 @@ def job_detail(settings: Settings, job_id: str, *, compact: bool = False) -> dic
     if not source_aspect and probe.get("width") and probe.get("height"):
         source_aspect = aspect_label(int(probe["width"]), int(probe["height"]))
     finish_doc = _load(directory / "finish.json") or {}
-    drafts_ready = quality_complete(directory, clips, "draft", path=path) if clips else False
-    finals_ready = quality_complete(directory, clips, "final", path=path) if clips else False
+    drafts_ready = quality_present(directory, clips, "draft", path=path) if clips else False
+    finals_ready = quality_present(directory, clips, "final", path=path) if clips else False
     occupied = occupied_job_id(settings) == job_id
     view = ui_stage(
         job,

@@ -17,13 +17,18 @@ from vrs.jobops import (
     JobOpsError,
     confirm_aspect,
     delete_job,
+    discard_rewrite_batch,
     import_douyin_cookie,
     patch_settings,
     preview_clip_script,
     probe_local_file,
+    reap_stale_rewrite_batches,
+    rewrite_batch_status,
     save_all_json,
     save_clip_script,
+    save_rewrite_batch,
     settings_public,
+    start_rewrite_batch,
 )
 from vrs.jobstore import get_job
 from vrs.jobview import (
@@ -100,6 +105,10 @@ class SettingsPatch(BaseModel):
     mock_speed: Literal["0.25x", "1x", "4x"] | None = None
     mock_faults: dict[str, Any] | None = None
     comfy_base_url: str | None = None
+    llm_kind: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_api_key: str | None = None
     gpu_memory_gb: float | None = None
     hang_timeout_sec: int | None = None
     generate_clip_timeout_sec: int | None = None
@@ -121,6 +130,15 @@ class SettingsPatch(BaseModel):
 
 class DouyinCookieImport(BaseModel):
     force_window: bool = False
+
+
+class RewriteBatchBody(BaseModel):
+    clip_ids: list[str] = Field(default_factory=list)
+    requirement: str = ""
+
+
+class RewriteBatchSave(BaseModel):
+    clip_ids: list[str] = Field(default_factory=list)
 
 
 class DraftBody(BaseModel):
@@ -152,6 +170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return app.state.settings
 
     ensure_seed(settings)
+    reap_stale_rewrite_batches(settings)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -505,6 +524,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "任务不存在") from None
         except BusyError as exc:
             raise _http_busy(exc) from exc
+        except JobOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/rewrite-batch")
+    def api_rewrite_batch_start(job_id: str, body: RewriteBatchBody) -> dict:
+        try:
+            return start_rewrite_batch(_settings(), job_id, body.clip_ids, body.requirement)
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
+        except BusyError as exc:
+            raise _http_busy(exc) from exc
+        except JobOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/jobs/{job_id}/rewrite-batch")
+    def api_rewrite_batch_status(job_id: str, full: bool = False) -> dict:
+        try:
+            return rewrite_batch_status(_settings(), job_id, full=full)
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
+
+    @app.post("/api/jobs/{job_id}/rewrite-batch/save")
+    def api_rewrite_batch_save(job_id: str, body: RewriteBatchSave) -> dict:
+        try:
+            return save_rewrite_batch(_settings(), job_id, body.clip_ids)
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
+        except JobOpsError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/rewrite-batch/discard")
+    def api_rewrite_batch_discard(job_id: str) -> dict:
+        try:
+            return discard_rewrite_batch(_settings(), job_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "任务不存在") from None
         except JobOpsError as exc:
             raise HTTPException(400, str(exc)) from exc
 

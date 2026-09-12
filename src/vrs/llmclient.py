@@ -12,6 +12,8 @@ from vrs.vlclient import unload_vl
 
 DEFAULT_LLM = "Qwen/Qwen3.5-9B"
 SDK_KIND = "cursor_sdk"
+# 这两种 kind 都由 sdkclient.generate_text 承接（内部再分 backend）
+_SDK_KINDS = {"cursor_sdk", "anthropic_sdk"}
 _SESSION: dict[str, Any] = {"model": None, "tokenizer": None, "key": None}
 
 
@@ -36,10 +38,11 @@ def _model_id(cfg: dict[str, Any]) -> str:
 
 
 def llm_label(settings: Settings) -> str:
-    if _kind(settings) == SDK_KIND:
+    kind = _kind(settings)
+    if kind in _SDK_KINDS:
         from vrs.sdkclient import sdk_model
 
-        return f"cursor_sdk:{sdk_model(settings)}"
+        return f"{kind}:{sdk_model(settings)}"
     return _model_id(resolve_llm(settings))
 
 
@@ -97,7 +100,7 @@ def ensure_llm_weights(settings: Settings) -> Path:
 def llm_health(settings: Settings) -> tuple[bool, str]:
     cfg = resolve_llm(settings)
     kind = str(cfg.get("kind") or "transformers").strip() or "transformers"
-    if kind == SDK_KIND:
+    if kind in _SDK_KINDS:
         from vrs.sdkclient import sdk_health
 
         return sdk_health(settings)
@@ -225,7 +228,7 @@ def generate_text(
     images: Sequence[Path] | None = None,
     stats: dict[str, Any] | None = None,
 ) -> str:
-    if _kind(settings) == SDK_KIND:
+    if _kind(settings) in _SDK_KINDS:
         from vrs.sdkclient import SDKError
         from vrs.sdkclient import generate_text as sdk_generate
 
@@ -241,7 +244,7 @@ def generate_text(
         except SDKError as exc:
             raise LLMError(str(exc)) from exc
     if images:
-        raise LLMError("本机 Qwen3.5-9B 是纯文本模型，看不了图；带图请把 llm.kind 设为 cursor_sdk")
+        raise LLMError("本机 Qwen3.5-9B 是纯文本模型，看不了图；带图请把 llm.kind 设为 cursor_sdk 或 anthropic_sdk")
     model, tokenizer = _load_tf(settings)
     think = bool(settings.default.get("llm_enable_thinking") if thinking is None else thinking)
     tokens = int(max_new_tokens or settings.default.get("llm_max_new_tokens") or 8192)

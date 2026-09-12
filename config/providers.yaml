@@ -1,26 +1,17 @@
 llm:
-  # Cursor SDK agent；文本推理统一使用 grok-4.6
-  kind: cursor_sdk
-  model: Qwen/Qwen3.5-9B
-  sdk_model: grok-4.6
-  sdk_params: ["effort=high"]
-  sdk_fallback: ""
-  sdk_fallback_params: []
-  sdk_mode: agent
-  sdk_retries: 3
-  sdk_timeout: 900
+  # 云端模型（Anthropic 兼容接口，MiniMax M3 等）。设置页可改，落 config/local.yaml
+  kind: anthropic_sdk
+  base_url: https://api.minimax.cn/anthropic
+  model: MiniMax-M3
+  # MiniMax-M3 默认关 thinking；写稿/拆段是结构化任务，开推理档遵循度显著提升
+  thinking: true
+  # 批量写稿/批量改写的并发路数（按 MiniMax 限流情况调整）
+  sdk_concurrency: 3
+  api_key: ""  # 走环境变量 ANTHROPIC_API_KEY，或在设置页填（存 local.yaml，不提交）
 
 vl:
-  # Cursor SDK 负责视觉理解；ASR/OCR/口播情绪仍走本地专用模型
-  kind: cursor_sdk
-  model: Qwen/Qwen3-VL-8B-Instruct
-  sdk_model: grok-4.6
-  sdk_params: ["effort=high"]
-  sdk_fallback: ""
-  sdk_fallback_params: []
-  sdk_mode: agent
-  sdk_retries: 3
-  sdk_timeout: 900
+  # 只写 kind，其余（base_url/model/api_key）留空则继承 llm —— 同一云端模型管文本和视觉
+  kind: anthropic_sdk
 
 comfy:
   base_url: "http://127.0.0.1:8188"

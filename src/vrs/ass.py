@@ -32,6 +32,29 @@ def _escape(text: str) -> str:
     return out.replace("\n", r"\N")
 
 
+def _hex_to_ass(color: str) -> str:
+    """#RRGGBB → ASS 内联色标 {\\c&HBBGGRR&}（ASS 色序是 BGR）。非法输入返回空串。"""
+    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", str(color or "").strip())
+    if not m:
+        return ""
+    rr, gg, bb = m.group(1)[0:2], m.group(1)[2:4], m.group(1)[4:6]
+    return rf"{{\c&H{bb}{gg}{rr}&}}"
+
+
+def _styled_text(text: str, runs: list[dict[str, Any]] | None) -> str:
+    """有分段颜色数据就按段拼内联标签（数据驱动还原原片花字），否则纯转义文本。"""
+    if not runs:
+        return _escape(text)
+    parts: list[str] = []
+    for run in runs:
+        chunk = str(run.get("text") or "")
+        if not chunk:
+            continue
+        tag = _hex_to_ass(run.get("color") or "")
+        parts.append((tag + _escape(chunk)) if tag else _escape(chunk))
+    return "".join(parts) or _escape(text)
+
+
 def _is_drama_title(text: str) -> bool:
     raw = (text or "").strip()
     if not raw or _SKIP_TITLE.search(raw):
@@ -46,15 +69,15 @@ def _events_from_dialogue(
     spans: list[dict[str, Any]],
     *,
     default_region: str,
-) -> list[tuple[str, float, float, str]]:
-    rows: list[tuple[str, float, float, str]] = []
+) -> list[tuple[str, float, float, str, list[dict[str, Any]] | None]]:
+    rows: list[tuple[str, float, float, str, list[dict[str, Any]] | None]] = []
     for item in dialogue.get("speech") or []:
         text = str(item.get("text") or "").strip()
         if not is_dialogue_caption(text):
             continue
         mapped = map_span(float(item.get("t0") or 0), float(item.get("t1") or 0), spans)
         if mapped:
-            rows.append((default_region if default_region in {"bottom", "title"} else "bottom", *mapped, text))
+            rows.append((default_region if default_region in {"bottom", "title"} else "bottom", *mapped, text, None))
     for item in dialogue.get("on_screen") or []:
         if item.get("watermark"):
             continue
@@ -62,11 +85,13 @@ def _events_from_dialogue(
         region = str(item.get("region") or "")
         if region not in {"title", "top", "upper"}:
             continue
-        if not _is_drama_title(text):
+        runs = item.get("runs") if isinstance(item.get("runs"), list) else None
+        # runs 是显式的烧字样式数据 = 上游已确认这是要还原的片内标题，跳过剧名启发式
+        if not runs and not _is_drama_title(text):
             continue
         mapped = map_span(float(item.get("t0") or 0), float(item.get("t1") or 0), spans)
         if mapped:
-            rows.append(("title", *mapped, text))
+            rows.append(("title", *mapped, text, runs))
     return rows
 
 
@@ -98,10 +123,10 @@ Style: Title,Microsoft YaHei,64,&H0000FFFF,&H000000FF,&H00000000,&H80000000,1,0,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = [header]
-    for style_key, t0, t1, text in events:
+    for style_key, t0, t1, text, runs in events:
         style = "Title" if style_key == "title" else "Bottom"
         lines.append(
-            f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},{style},,0,0,0,,{_escape(text)}\n"
+            f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},{style},,0,0,0,,{_styled_text(text, runs)}\n"
         )
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text("".join(lines), encoding="utf-8-sig")

@@ -78,6 +78,8 @@ LOOK_REV = 3
 
 DEFAULT_VL_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 CURSOR_SDK_KIND = "cursor_sdk"
+# 这两种 kind 都由 sdkclient.generate_text 承接（内部再分 backend）
+_SDK_KINDS = {"cursor_sdk", "anthropic_sdk"}
 _THINK = re.compile(r"<think>.*?</think>", re.S)
 _SESSION: dict[str, Any] = {"model": None, "processor": None, "key": None}
 
@@ -159,7 +161,7 @@ def vl_health(settings: Settings) -> tuple[bool, str]:
     if "11434" in str(cfg.get("base_url") or ""):
         return False, "不要把 VL 指到 Ollama（吃不了视频，也不是 8B Transformers）"
 
-    if kind == CURSOR_SDK_KIND:
+    if kind in _SDK_KINDS:
         from vrs.sdkclient import sdk_health
 
         return sdk_health(settings, section="vl")
@@ -556,7 +558,7 @@ def analyze_images(
     tokens = int(max_new_tokens or settings.default.get("vl_beats_max_tokens") or 1800)
     edge = int(max_edge if max_edge is not None else settings.default.get("vl_look_max_edge") or 768)
     cfg = resolve_vl(settings)
-    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+    if str(cfg.get("kind") or "") in _SDK_KINDS:
         return _cursor_analyze_images(settings, paths, prompt, max_new_tokens=tokens, max_edge=edge)
     if str(cfg.get("kind") or "transformers") == "openai_compat":
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -752,7 +754,7 @@ def analyze_video(
     shots: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cfg = resolve_vl(settings)
-    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+    if str(cfg.get("kind") or "") in _SDK_KINDS:
         return _cursor_analyze_video(settings, clip, t0=t0, t1=t1, shots=shots)
     if str(cfg.get("kind") or "transformers") != "openai_compat":
         return _tf_analyze_video(settings, clip, t0=t0, t1=t1, shots=shots)
@@ -777,7 +779,7 @@ def analyze_frames(
     t1: float,
 ) -> dict[str, Any]:
     cfg = resolve_vl(settings)
-    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+    if str(cfg.get("kind") or "") in _SDK_KINDS:
         return _cursor_analyze_frames(settings, frames, shot_id=shot_id, t0=t0, t1=t1)
     if str(cfg.get("kind") or "transformers") != "openai_compat":
         return _tf_analyze_frames(settings, frames, shot_id=shot_id, t0=t0, t1=t1)
@@ -799,7 +801,7 @@ def analyze_frames_batch(settings: Settings, items: list[dict[str, Any]]) -> lis
     if not items:
         return []
     cfg = resolve_vl(settings)
-    if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+    if str(cfg.get("kind") or "") in _SDK_KINDS:
         return [
             _cursor_analyze_frames(
                 settings,
@@ -844,7 +846,7 @@ def look_frames(
     tokens = int(settings.default.get("vl_look_max_tokens") or 2200)
     cfg = resolve_vl(settings)
     try:
-        if str(cfg.get("kind") or "") == CURSOR_SDK_KIND:
+        if str(cfg.get("kind") or "") in _SDK_KINDS:
             raw = _cursor_analyze_images(settings, paths, prompt, max_new_tokens=tokens, max_edge=max_edge)
         elif str(cfg.get("kind") or "transformers") == "openai_compat":
             content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]

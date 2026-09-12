@@ -13,7 +13,9 @@ from __future__ import annotations
 import copy
 import json
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +28,9 @@ from vrs.textjson import parse_json_payload
 # 横条是 7680x360，发给视觉模型会被内部缩放到每格百来像素，外观细节全丢。
 # 改发 1920x1080 的单帧：一张 100KB，细节留得住，上传也快得多。
 MAX_FRAMES = 8
-MAX_TRIES = 3
-WRITER_REV = 8
+MAX_TRIES = 5
+# rev 9：T2VA 也按故事组传递外观锁（组内正文锁句必须逐字 = 组锚），旧稿正文锁句不可信，全量重写
+WRITER_REV = 9
 # 金标 event_chain：硬切落在区间末尾，最后 0.2s 的格常是下一条第一帧。
 EDGE = 0.20
 
@@ -441,7 +444,8 @@ def build_prompt(
         )
         head = (
             "本条走 T2VA：没有关键帧，整条时间线由文字构建。不要提 <Picture>。\n"
-            "不要沿用上一段的外观锁。本条自己写三种锁，并写进每一镜正文：\n"
+            "同一故事组内人物外观必须连续：已锁定的说话人逐字复用外观锁；"
+            "本条新出现的人物自己写完整三种锁，并写进每一镜正文：\n"
             "- Identity lock：族裔、年龄、脸、发型、每一层衣服、手里的东西\n"
             "- Voice lock：年龄段、性别、语言、音高、音色、语速基线\n"
             "- Scene lock：地点、时段、天气/室内光、色温、地面、主要陈设\n"
@@ -451,7 +455,7 @@ def build_prompt(
             "第 1 张是胸口特写：就胸口以上开场，衣服铺满底部。"
             "第 1 张能看见全身、障碍物、翻越：按图写能看见那个过程，不要收成落地之后或已经站稳的特写。\n"
             "人数用正面写法：Total cast in this clip: N people ...；空位写成空地面/空椅，不要点名否定、不要写 is not on screen。\n"
-            "Identity lock 只写本条附图里入画的人。邻条换了装、换了场的人一个字都不写。\n"
+            "正文只提本条附图里入画的人；已锁定但本条没入画的人不要提，也不要写 is not on screen。\n"
             "宽景里的人没有说话任务时写成 lips pressed into a thin line, jaw clenched。\n"
             "黑板、海报、校徽写成 unreadably textured / blank shapes，不要点名真汉字或真徽章。\n"
             "空间写几何，不写意图：past (S2)'s nearer shoulder onto (S1)'s chest，不要写 points at him。\n"
@@ -463,10 +467,10 @@ def build_prompt(
             "禁止 emotional / beautiful / expressive / cinematic。"
         )
         frames_head = "附图（必须逐张看。情节、场次、站位、道具、光线以图为准；拍表 cells 只是时间索引，常常过短或解析坏了）"
-        lock_head = "本条人物外观（T2VA 不沿用上一段，按本条附图自己写细）"
-        lock_rule = "说话人用 (S1)(S2)，本条自己写完整 Identity lock 和 Voice lock，不要写成一句年龄+衣服"
+        lock_head = "已锁定的说话人外观（同一故事组内必须逐字复用，不许改写）"
+        lock_rule = "说话人用 (S1)(S2)；已锁定的逐字复用；本条新出现的人物在 speakers.lock 写完整 Identity lock 和 Voice lock"
         reset = ""
-        locked = "  （T2VA 不跨段锁脸）"
+        locked = "\n".join(f"  {sid}: {lock}" for sid, lock in locks.items()) or "  （本组还没有锁定的人，本条的人物就是组内锚点，写细）"
 
     pad = ""
     if clip.get("padded"):
@@ -541,6 +545,7 @@ def build_prompt(
 - 邻条那几句一个字都不要写进本条。本条只说「对白原文」里的句子
 - **禁止**英文出现 subtitle、caption、burned-in、on-screen text、Chinese text overlay。写这些词会烧字幕
 - 不要复述原片烧在画面上的字幕和标题
+- 原片片中的标题字、片尾主题大字（如片名、四字标语）**一律不写**：不要描述任何 fade-in/appear 的文字、字符、标语、牌匾——H3 直接生成文字必是乱码，画面只写「渐暗/纯黑收束」即可，字由后期字幕烧录还原
 - {lock_rule}
 - Identity lock 只列本条附图里真正入画的人。没入画的人一个字都不写，也不写 is not on screen
 - [Shot 1] 正文开头必须出现 `Identity lock`、`Voice lock`、`Scene lock` 三句，后面才是动作
@@ -954,7 +959,7 @@ def build_rewrite_prompt(
     else:
         mission = "你在改写一条 MiniMax H3 视频生成提示词。这是复刻原片的情节，不是摘要。"
         frames_head = "附图（情节、场次、站位、道具、光线以图为准）"
-        lock_rule = "说话人用 (S1)(S2)，本条自己写完整 Identity lock 和 Voice lock"
+        lock_rule = "说话人用 (S1)(S2)；已锁定的逐字复用；本条新出现的人物写完整 Identity lock 和 Voice lock"
 
     mode = str(edit.get("mode") or "ai")
     if mode == "manual":
@@ -1012,6 +1017,7 @@ def build_rewrite_prompt(
 - 全部英文，只有 <d> 里面能出现汉字；<d> 写成 `<d>[Chinese] 原句</d>`
 - 对白一字不改地落进某个镜头；邻条对白一个字都不写
 - 禁止 subtitle / caption / burned-in / on-screen text / Chinese text overlay
+- 禁止描述画面里浮现/显现任何文字、字符、标语、牌匾（fade-in text / title card / Chinese characters 之类）——H3 生成文字必乱码，画面只写渐暗/纯黑收束，字由后期字幕烧录
 - {lock_rule}
 - [Shot 1] 正文开头必须出现 Identity lock、Voice lock、Scene lock 三句，后面才是动作
 - [Shot 1] 开场必须对上附图第 1 张；末帧只停在附图最后一张的人和景
@@ -1180,9 +1186,10 @@ def _cached(
         return None
     if int(doc.get("writer_rev") or 0) != WRITER_REV:
         return None
-    if abs(float(doc.get("source_t0") or -1) - float(clip["t0"])) > 0.02:
+    # 注意不要写 `or -1` 当哨兵：0.0 是 falsy，t0=0 的第一段会被永远判成不匹配
+    if abs(float(doc.get("source_t0", -1.0)) - float(clip["t0"])) > 0.02:
         return None
-    if abs(float(doc.get("source_t1") or -1) - float(clip["t1"])) > 0.02:
+    if abs(float(doc.get("source_t1", -1.0)) - float(clip["t1"])) > 0.02:
         return None
     seconds = float(clip["h3_seconds"])
     txt = assemble_txt(doc, clip, path)
@@ -1206,65 +1213,116 @@ def write_prompts(
     directory: Path,
     path: str,
     log: Any,
+    progress: Any = None,
 ) -> list[dict[str, Any]]:
-    """按顺序写每段。I2VA 把说话人外观锁向后传递；T2VA 不跨段锁脸。"""
+    """按 cast_reset 把连续段切成故事组：组内串行传外观锁，组间并发（sdk_concurrency）。"""
     path = normalize_generate_path(path)
     out_dir = directory / "prompts"
     out_dir.mkdir(parents=True, exist_ok=True)
-    locks: dict[str, str] = {}
     lock_across = bool(PATH_LOCK_ACROSS.get(path, True))
+    cfg = settings.providers.get("llm") or {}
+    concurrency = max(1, int(cfg.get("sdk_concurrency") or 3))
     if not lock_across:
-        log("T2VA：不跨段传递外观锁；人物不必像原片，但锁句和动作链要写细")
+        log("本路线不跨段传递外观锁；每段独立写外观")
     prepared: list[tuple[dict[str, Any], dict[str, Any], tuple[dict[str, Any], str] | None]] = []
     for clip in clips:
         facts = clip_facts(clip, beats, dialogue, cuts, root=directory, clips=clips)
         cached = _cached(out_dir / f"{clip['id']}.json", clip, facts, path)
         prepared.append((clip, facts, cached))
 
-    items: list[dict[str, Any]] = []
-    for clip, facts, cached in prepared:
-        if not lock_across or clip.get("cast_reset"):
-            locks.clear()
-            if lock_across and clip.get("cast_reset"):
-                log(f"  {clip['id']} 人物组重置，清空已锁外观")
-        if cached is not None:
-            doc, txt = cached
-            snapped = _apply_canonical_locks(doc, locks) if lock_across else False
-            doc["generate_path"] = path
-            if snapped:
-                txt = assemble_txt(doc, clip, path)
+    # 分组：cast_reset=True 的段新开一组（首段亦然）；不开锁传递时每段独立成组
+    groups: list[list[tuple[dict[str, Any], dict[str, Any], tuple[dict[str, Any], str] | None]]] = []
+    for item in prepared:
+        new_group = not groups or not lock_across or bool(item[0].get("cast_reset"))
+        if new_group:
+            groups.append([item])
+        else:
+            groups[-1].append(item)
+
+    log_lock = threading.Lock()
+    done_count = [0]
+
+    def slog(text: str) -> None:
+        with log_lock:
+            log(text)
+
+    def run_group(
+        group: list[tuple[dict[str, Any], dict[str, Any], tuple[dict[str, Any], str] | None]],
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        locks: dict[str, str] = {}
+        results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for clip, facts, cached in group:
+            if lock_across and bool(clip.get("cast_reset")):
+                locks.clear()
+                slog(f"  {clip['id']} 故事组边界，外观锁重置")
+            if cached is not None:
+                doc, txt = cached
+                snapped = _apply_canonical_locks(doc, locks) if lock_across else False
+                doc["generate_path"] = path
+                if snapped:
+                    txt = assemble_txt(doc, clip, path)
+                    (out_dir / f"{clip['id']}.json").write_text(
+                        json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    slog(f"  {clip['id']} 复用已过检的结果（已钉外观锁）")
+                else:
+                    slog(f"  {clip['id']} 复用已过检的结果")
+            else:
+                use_locks = locks if lock_across else {}
+                doc, txt = _one_clip(settings, clip, facts, path=path, locks=use_locks, log=slog)
+                if lock_across:
+                    _apply_canonical_locks(doc, locks)
+                doc["generate_path"] = path
                 (out_dir / f"{clip['id']}.json").write_text(
                     json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                log(f"  {clip['id']} 复用已过检的结果（已钉外观锁）")
-            else:
-                log(f"  {clip['id']} 复用已过检的结果")
-        else:
-            use_locks = locks if lock_across else {}
-            doc, txt = _one_clip(settings, clip, facts, path=path, locks=use_locks, log=log)
-            if lock_across:
-                _apply_canonical_locks(doc, locks)
-            doc["generate_path"] = path
-            (out_dir / f"{clip['id']}.json").write_text(
-                json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
+            stem = str(clip["id"])
+            (out_dir / f"{stem}.txt").write_text(txt, encoding="utf-8")
+            (out_dir / f"{stem}.md").write_text(
+                assemble_md(doc, clip, facts, txt), encoding="utf-8"
             )
-        stem = str(clip["id"])
-        (out_dir / f"{stem}.txt").write_text(txt, encoding="utf-8")
-        (out_dir / f"{stem}.md").write_text(
-            assemble_md(doc, clip, facts, txt), encoding="utf-8"
+            with log_lock:
+                done_count[0] += 1
+                if progress is not None:
+                    try:
+                        progress(done_count[0], len(clips), str(clip["id"]))
+                    except Exception:  # noqa: BLE001 - 进度回调失败不影响写稿
+                        pass
+            results.append(
+                (
+                    clip,
+                    doc,
+                    {
+                        "clip_id": clip["id"],
+                        "generate_path": path,
+                        "h3_seconds": clip["h3_seconds"],
+                        "prompt": f"prompts/{stem}.txt",
+                        "review": f"prompts/{stem}.md",
+                        "speakers": doc.get("speakers") or [],
+                        "shots": [
+                            {"index": s.get("index"), "at": s.get("at")} for s in (doc.get("shots") or [])
+                        ],
+                        "cast_reset": bool(clip.get("cast_reset")),
+                    },
+                )
+            )
+        return results
+
+    by_id: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    if concurrency > 1 and len(groups) > 1:
+        log(f"  共 {len(groups)} 个故事组，{concurrency} 路并发改写")
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(groups))) as pool:
+            for group_results in pool.map(run_group, groups):
+                for clip, doc, item in group_results:
+                    by_id[str(clip["id"])] = (doc, item)
+    else:
+        for group in groups:
+            for clip, doc, item in run_group(group):
+                by_id[str(clip["id"])] = (doc, item)
+    # 统一按最终内存态重写 json：钉外观锁后的 doc 必须落盘，否则预检从磁盘读到的
+    # 是钉锁前的旧 speakers，跨段一致性检查会误报。
+    for doc, item in by_id.values():
+        (out_dir / f"{item['clip_id']}.json").write_text(
+            json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        items.append(
-            {
-                "clip_id": clip["id"],
-                "generate_path": path,
-                "h3_seconds": clip["h3_seconds"],
-                "prompt": f"prompts/{stem}.txt",
-                "review": f"prompts/{stem}.md",
-                "speakers": doc.get("speakers") or [],
-                "shots": [
-                    {"index": s.get("index"), "at": s.get("at")} for s in (doc.get("shots") or [])
-                ],
-                "cast_reset": bool(clip.get("cast_reset")),
-            }
-        )
-    return items
+    return [by_id[str(clip["id"])][1] for clip in clips]

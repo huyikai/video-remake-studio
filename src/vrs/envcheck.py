@@ -149,18 +149,18 @@ def collect_env(settings: Settings, *, stage: str = "idle") -> dict[str, Any]:
         ("emotion2vec_plus_large_dir", "emotion2vec+ large 权重"),
         ("realesrgan_dir", "RealESRGAN"),
     ]
-    vl_sdk = str((settings.providers.get("vl") or {}).get("kind") or "") == "cursor_sdk"
-    llm_sdk = str((settings.providers.get("llm") or {}).get("kind") or "") == "cursor_sdk"
+    vl_sdk = str((settings.providers.get("vl") or {}).get("kind") or "") in {"cursor_sdk", "anthropic_sdk"}
+    llm_sdk = str((settings.providers.get("llm") or {}).get("kind") or "") in {"cursor_sdk", "anthropic_sdk"}
     for key, label in path_keys:
         path = settings.path(key)
         inside = assert_outside_repo(label, path, settings)
         exists = path.exists()
         if key == "qwen3_vl_model_dir" and vl_sdk:
-            ok, detail = True, "VL 走 Cursor SDK，不需要本机 Qwen3-VL-8B"
+            ok, detail = True, "VL 走云端 SDK，不需要本机 Qwen3-VL-8B"
             install.append(_item(key, ok, detail, layer="install", needed="vl" in needed))
             continue
         if key == "qwen3_5_model_dir" and llm_sdk:
-            ok, detail = True, "文本 LLM 走 Cursor SDK，不需要本机 Qwen3.5-9B"
+            ok, detail = True, "文本 LLM 走云端 SDK，不需要本机 Qwen3.5-9B"
             install.append(_item(key, ok, detail, layer="install", needed="llm" in needed))
             continue
         if inside:

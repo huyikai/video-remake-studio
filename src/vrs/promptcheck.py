@@ -28,6 +28,16 @@ BANNED = (
     "on-screen text",
     "on-screen caption",
 )
+# 内容级的「画面里出现文字」描述（如片尾主题字 four large Chinese characters ... fades in）。
+# H3 烧字必乱码——这类描述要剥离，文字由后期 ASS 烧。刻意收窄避免误报：
+# 不含单个 character（角色/字符两义）、不含 words+show（"her words show hesitation"）。
+BURN_TEXT = re.compile(
+    r"\b(?:large|big|bold|red|white|golden|glowing|neon|giant|four|three|two|five)?\s*"
+    r"(?:Chinese|hanzi|kanji)\s+(?:characters?|letters?|glyphs?|words?|text|titles?)\b"
+    r"|\b(?:letters?|glyphs?|titles?|logos?|slogans?)\s+"
+    r"(?:fade|fades|appear|appears|emerge|emerges|render|renders|display|displays|show|shows|burn|burns)\b",
+    re.I,
+)
 I2VA_MARK = "<Picture 1>"
 CORE_FIELDS = (
     "integrated_multimodal_description:",
@@ -271,6 +281,17 @@ def check_banned(clip_id: str, prompt: str) -> list[str]:
     return [f"{clip_id}: 英文里出现 `{word}`，会引出烧死的字幕" for word in BANNED if word in low]
 
 
+def check_burned_text(clip_id: str, body: str) -> list[str]:
+    """画面烧字类描述（内容级）：H3 写这些字必乱码，应剥离留给后期 ASS。"""
+    m = BURN_TEXT.search(str(body or ""))
+    if not m:
+        return []
+    return [
+        f"{clip_id}: 正文描述画面烧字「{m.group(0)}」— H3 生成文字必乱码，"
+        f"删掉这句，画面文字由后期字幕烧录"
+    ]
+
+
 def check_fields(clip_id: str, prompt: str) -> list[str]:
     return [f"{clip_id}: 缺 {field.rstrip(':')}" for field in CORE_FIELDS if field not in str(prompt or "")]
 
@@ -297,10 +318,12 @@ def check_clip(doc: dict[str, Any], seconds: float, allowed: list[str]) -> list[
     )
     out = check_shots(clip_id, shots, seconds)
     out += check_dialogue(clip_id, body, allowed)
+    out += check_coverage(clip_id, body, allowed)
     out += check_repeat(clip_id, body)
     out += check_han(clip_id, body + " " + people + " " + tail)
     out += check_speakers(clip_id, people, body)
     out += check_banned(clip_id, body + " " + people + " " + tail)
+    out += check_burned_text(clip_id, body)
     out += check_density(clip_id, body, speakers=list(doc.get("speakers") or []))
     if not str(doc.get("style") or "").strip():
         out.append(f"{clip_id}: 缺 style，[Shot 1] 开头没有整体风格")

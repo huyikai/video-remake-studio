@@ -12,8 +12,9 @@ PATH_ALIASES: dict[str, str] = {"fl2va_turbo": "i2va_turbo"}
 # 走哪条路决定提示词首行指令，也决定要不要抽关键帧
 PATH_KEYFRAMES: dict[str, int] = {"t2va": 0, "t2va_turbo": 0, "i2va_turbo": 1, "ref2va": 0}
 
-# T2VA 不跨段锁脸：情节、对白一致即可，人物不必长得一样
-PATH_LOCK_ACROSS: dict[str, bool] = {"t2va": False, "t2va_turbo": False, "i2va_turbo": True, "ref2va": True}
+# 外观锁按故事组（cast_reset 边界）向后传递：同一故事内逐字复用，跨故事重置。
+# T2VA 文本锁锁不死脸（无图锚定），但服装/发型/道具/人数能锁住 —— 成片多故事拼接时必需。
+PATH_LOCK_ACROSS: dict[str, bool] = {"t2va": True, "t2va_turbo": True, "i2va_turbo": True, "ref2va": True}
 
 T2VA_WORKFLOWS: tuple[str, ...] = (
     "video_minimax_h3_t2v_turbo.json",

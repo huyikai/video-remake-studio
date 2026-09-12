@@ -21,6 +21,11 @@ type SettingsView = {
   mock_speed: "0.25x" | "1x" | "4x";
   mock_faults: Record<string, unknown>;
   comfy_base_url: string;
+  llm_kind: string;
+  llm_base_url: string;
+  llm_model: string;
+  llm_has_api_key: boolean;
+  llm_api_key_from_env: boolean;
   gpu_memory_gb: number;
   hang_timeout_sec: number;
   generate_clip_timeout_sec: number;
@@ -65,6 +70,8 @@ export default function SettingsPage({ onClose }: Props) {
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [smtpAuth, setSmtpAuth] = useState("");
   const [clearSmtpAuth, setClearSmtpAuth] = useState(false);
+  const [llmKeyDraft, setLlmKeyDraft] = useState("");
+  const [clearLlmKey, setClearLlmKey] = useState(false);
   const [smtpTesting, setSmtpTesting] = useState(false);
   const [smtpTestMsg, setSmtpTestMsg] = useState("");
   const [smtpTestOk, setSmtpTestOk] = useState<boolean | null>(null);
@@ -98,6 +105,10 @@ export default function SettingsPage({ onClose }: Props) {
         mock_speed: form.mock_speed,
         mock_faults: mockFaults,
         comfy_base_url: form.comfy_base_url,
+        llm_kind: form.llm_kind,
+        llm_base_url: form.llm_base_url,
+        llm_model: form.llm_model,
+        ...(clearLlmKey ? { llm_api_key: "" } : llmKeyDraft.trim() ? { llm_api_key: llmKeyDraft.trim() } : {}),
         gpu_memory_gb: form.gpu_memory_gb,
         hang_timeout_sec: form.hang_timeout_sec,
         generate_clip_timeout_sec: form.generate_clip_timeout_sec,
@@ -123,8 +134,13 @@ export default function SettingsPage({ onClose }: Props) {
       setReplaceOpen(false);
       setSmtpAuth("");
       setClearSmtpAuth(false);
+      setLlmKeyDraft("");
+      setClearLlmKey(false);
       const savedAuth = Boolean(smtpAuth.trim() || clearSmtpAuth);
-      if ((next as SettingsView).smtp_password_from_env && savedAuth) {
+      if ((next as SettingsView).llm_api_key_from_env && (llmKeyDraft.trim() || clearLlmKey)) {
+        setMsgWarn(true);
+        setMsg("已写入本机配置，但当前仍使用环境变量 ANTHROPIC_API_KEY，模型调用不会用到这次保存。请先清掉该变量。");
+      } else if ((next as SettingsView).smtp_password_from_env && savedAuth) {
         setMsgWarn(true);
         setMsg("已写入本机配置，但当前仍使用环境变量 VRS_SMTP_PASSWORD，发信不会用到这次保存。请先清掉该变量。");
       } else if ((next as SettingsView).douyin_cookie_from_env && (cookieDraft.trim() || clearCookie)) {
@@ -345,6 +361,52 @@ export default function SettingsPage({ onClose }: Props) {
               </>
             )}
             <p className="mt-2 text-xs text-muted">{form.douyin_cookie_hint}</p>
+          </section>
+          <section className="rounded-lg border border-line p-4">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted">云端模型</p>
+            <h3 className="mt-1 font-semibold">理解 + 脚本（LLM / VL）</h3>
+            <p className="mt-1 text-xs text-muted">文本理解、写稿和视觉拍表共用同一套云端模型配置。Key 只保存在本机 config/local.yaml，不会提交。</p>
+            <div className="mt-4 space-y-3">
+              <label className="block text-sm text-text">
+                Provider
+                <Select value={form.llm_kind} onValueChange={(v) => set("llm_kind", v)}>
+                  <SelectTrigger className="mt-1 w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="anthropic_sdk">anthropic_sdk（MiniMax-M3 等 Anthropic 兼容）</SelectItem>
+                    <SelectItem value="cursor_sdk">cursor_sdk（grok-4.6 等 Cursor 后端）</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="block text-sm text-text">
+                base_url
+                <input className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.llm_base_url} placeholder="https://api.minimax.cn/anthropic" onChange={(e) => set("llm_base_url", e.target.value)} />
+              </label>
+              <label className="block text-sm text-text">
+                模型
+                <input className="mt-1 w-full rounded border border-line bg-surface p-2 text-text" value={form.llm_model} placeholder="MiniMax-M3" onChange={(e) => set("llm_model", e.target.value)} />
+              </label>
+              <label className="block text-sm text-text">
+                {form.llm_has_api_key ? "新 API Key（留空则不改）" : "API Key"}
+                <input
+                  type="password"
+                  className="mt-1 w-full rounded border border-line bg-surface p-2 text-text"
+                  autoComplete="new-password"
+                  value={llmKeyDraft}
+                  placeholder={form.llm_has_api_key ? "已保存，不会回显" : "sk-..."}
+                  onChange={(e) => {
+                    setLlmKeyDraft(e.target.value);
+                    setClearLlmKey(false);
+                  }}
+                />
+              </label>
+              {form.llm_has_api_key ? (
+                <label className="flex items-center gap-2 text-xs text-muted">
+                  <input type="checkbox" checked={clearLlmKey} onChange={(e) => { setClearLlmKey(e.target.checked); if (e.target.checked) setLlmKeyDraft(""); }} />
+                  清除已保存的 Key（回落到环境变量 ANTHROPIC_API_KEY）
+                </label>
+              ) : null}
+              {form.llm_api_key_from_env ? <p className="text-xs text-warn">当前实际使用环境变量 ANTHROPIC_API_KEY，本机配置改了也不生效，请先清掉该变量。</p> : null}
+            </div>
           </section>
           <section className="rounded-lg border border-line p-4">
             <p className="text-xs uppercase tracking-[0.16em] text-muted">模型环境</p>

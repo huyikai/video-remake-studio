@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ import yaml
 from vrs.aspect import aspect_mismatch
 from vrs.cancel import request_cancel
 from vrs.h3grid import merge_t2va_snapshot, normalize_generate_path, snap_seconds, t2va_defaults
-from vrs.jobstore import get_job, save_status
+from vrs.jobstore import get_job, iter_jobs, job_dir, save_status
 from vrs.lock import BusyError, JobLock, atomic_write_json
 from vrs.passb import assemble_md, assemble_txt, assemble_zh, clip_facts, rewrite_clip
 from vrs.probe import ProbeError, probe_video
@@ -139,6 +140,8 @@ def _write_prompt_files(
     index["prompts"] = items
     index.setdefault("generate_path", path)
     atomic_write_json(index_path, index)
+    # prompt_hash 不在 save 时回填：写 txt 之后回填会把"刚编辑的版本"误标为"video 用的版本"。
+    # 老 clip 让 jobview 显示 unknown / 待重生成，等下次 generate.py 自然写入正确 hash。
 
 
 def _after_save(settings: Settings, job: dict[str, Any], directory: Path) -> dict[str, Any]:
@@ -268,6 +271,7 @@ def save_clip_script(
         return _after_save(settings, job, directory)
 
     if prompt_json is not None:
+        _reject_if_busy(settings)
         facts = _clip_facts_for(directory, clip, clips)
         _write_prompt_files(directory, clip, prompt_json, path, facts=facts)
         if seconds_dirty:
@@ -336,6 +340,216 @@ def preview_clip_script(
     }
 
 
+def _batch_path(directory: Path) -> Path:
+    return directory / "rewrite_batch.json"
+
+
+def reap_stale_rewrite_batches(settings: Settings) -> None:
+    """serve 启动时清理：上一进程留下的 running 批量改写线程已死，不可能自愈。
+    已有完成预览的转 ready（供保存），全 pending 的直接删。"""
+    for job in iter_jobs(settings):
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            continue
+        directory = job_dir(settings, job_id)
+        batch = _load_batch(directory)
+        if batch is None or batch.get("state") != "running":
+            continue
+        recs = [rec for rec in (batch.get("clips") or {}).values() if isinstance(rec, dict)]
+        done = [rec for rec in recs if rec.get("state") == "done"]
+        if done:
+            batch["state"] = "ready"
+            atomic_write_json(_batch_path(directory), batch)
+        else:
+            _batch_path(directory).unlink(missing_ok=True)
+
+
+def _load_batch(directory: Path) -> dict[str, Any] | None:
+    batch = _load_json(_batch_path(directory))
+    return batch if isinstance(batch, dict) else None
+
+
+def start_rewrite_batch(
+    settings: Settings,
+    job_id: str,
+    clip_ids: list[str],
+    requirement: str,
+) -> dict[str, Any]:
+    """批量 AI 改写：后台逐段生成预览（不落盘），结果写 rewrite_batch.json 供勾选保存。"""
+    _reject_if_busy(settings)
+    ids = [str(c).strip() for c in clip_ids if str(c).strip()]
+    if not ids:
+        raise JobOpsError("没有选择片段")
+    if not str(requirement or "").strip():
+        raise JobOpsError("请填写修改需求")
+    directory, job = get_job(settings, job_id)
+    clips_doc = _load_json(directory / "clips.json") or {}
+    clips = list(clips_doc.get("clips") or [])
+    known = {str(c.get("id")) for c in clips}
+    unknown = [cid for cid in ids if cid not in known]
+    if unknown:
+        raise JobOpsError(f"没有这些片段：{', '.join(unknown)}")
+    existing = _load_batch(directory)
+    if existing is not None and existing.get("state") == "running":
+        raise JobOpsError("上一轮批量改写还在跑，等它结束")
+    if existing is not None and existing.get("state") == "ready":
+        raise JobOpsError("上一轮批量改写结果还没处理：先保存或放弃，再发起新一轮")
+    from datetime import datetime, timezone
+
+    batch: dict[str, Any] = {
+        "requirement": str(requirement).strip(),
+        "clip_ids": ids,
+        "state": "running",
+        "clips": {cid: {"state": "pending", "error": None, "preview": None} for cid in ids},
+        "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    atomic_write_json(_batch_path(directory), batch)
+
+    from vrs.worker import spawn
+
+    def work() -> None:
+        with JobLock(settings).hold(job_id):
+            _run_rewrite_batch(settings, job_id, directory, clips_doc, batch)
+
+    spawn(settings, job_id, work)
+    return batch
+
+
+def _run_rewrite_batch(
+    settings: Settings,
+    job_id: str,
+    directory: Path,
+    clips_doc: dict[str, Any],
+    batch: dict[str, Any],
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import datetime, timezone
+
+    batch_lock = threading.Lock()
+
+    def touch() -> None:
+        batch["updated_at"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        atomic_write_json(_batch_path(directory), batch)
+
+    clips = list(clips_doc.get("clips") or [])
+    path = normalize_generate_path(
+        clips_doc.get("generate_path") or "t2va_turbo"
+    )
+    cfg = settings.providers.get("llm") or {}
+    concurrency = max(1, int(cfg.get("sdk_concurrency") or 3))
+
+    def rewrite_one(cid: str) -> None:
+        rec = (batch.get("clips") or {}).get(cid) or {"state": "pending", "error": None, "preview": None}
+        try:
+            clip = next((c for c in clips if str(c.get("id")) == cid), None)
+            if clip is None:
+                raise JobOpsError(f"没有这一段：{cid}")
+            current = _load_json(directory / "prompts" / f"{cid}.json")
+            if not isinstance(current, dict):
+                current = {}
+            facts = _clip_facts_for(directory, clip, clips)
+            doc_new, txt = rewrite_clip(
+                settings,
+                clip,
+                facts,
+                path=path,
+                current=current,
+                edit={"mode": "ai", "requirement": str(batch.get("requirement") or "")},
+                log=lambda text: None,
+            )
+            rec["preview"] = {
+                "script_zh": assemble_zh(doc_new, clip),
+                "prompt_txt": txt,
+                "review_md": assemble_md(doc_new, clip, facts, txt),
+                "prompt_json": doc_new,
+            }
+            rec["state"] = "done"
+            rec["error"] = None
+        except Exception as exc:  # noqa: BLE001 - 单段失败不阻塞其余段
+            rec["state"] = "failed"
+            rec["error"] = str(exc).split("\n")[0][:300] or type(exc).__name__
+        with batch_lock:
+            batch["clips"][cid] = rec
+            touch()
+
+    ids = [cid for cid in (batch.get("clip_ids") or []) if cid]
+    if concurrency > 1 and len(ids) > 1:
+        with ThreadPoolExecutor(max_workers=min(concurrency, len(ids))) as pool:
+            futures = [pool.submit(rewrite_one, cid) for cid in ids]
+            for future in as_completed(futures):
+                future.result()
+    else:
+        for cid in ids:
+            rewrite_one(cid)
+    batch["state"] = "ready"
+    touch()
+
+
+def rewrite_batch_status(settings: Settings, job_id: str, *, full: bool = False) -> dict[str, Any]:
+    directory, _job = get_job(settings, job_id)
+    batch = _load_batch(directory)
+    if batch is None:
+        return {"state": "none"}
+    if not full:
+        slim = dict(batch)
+        slim.pop("clips", None)
+        slim["clips"] = {
+            cid: {"state": rec.get("state"), "error": rec.get("error")}
+            for cid, rec in (batch.get("clips") or {}).items()
+            if isinstance(rec, dict)
+        }
+        return slim
+    return batch
+
+
+def discard_rewrite_batch(settings: Settings, job_id: str) -> dict[str, Any]:
+    directory, _job = get_job(settings, job_id)
+    batch = _load_batch(directory)
+    if batch is not None and batch.get("state") == "running":
+        raise JobOpsError("批量改写还在跑，等它结束")
+    _batch_path(directory).unlink(missing_ok=True)
+    return {"state": "none"}
+
+
+def save_rewrite_batch(
+    settings: Settings,
+    job_id: str,
+    clip_ids: list[str],
+) -> dict[str, Any]:
+    """把勾选段的批量改写预览正式写入 prompts/，未选段丢弃，随后清理 batch 文件。"""
+    directory, job = get_job(settings, job_id)
+    batch = _load_batch(directory)
+    if batch is None:
+        raise JobOpsError("没有待保存的批量改写")
+    if batch.get("state") != "ready":
+        raise JobOpsError("批量改写还没完成")
+    clips_doc = _load_json(directory / "clips.json") or {}
+    clips = list(clips_doc.get("clips") or [])
+    path = normalize_generate_path(
+        clips_doc.get("generate_path") or (job.get("options") or {}).get("generate_path") or "t2va_turbo"
+    )
+    saved: list[str] = []
+    skipped: list[str] = []
+    for cid in clip_ids:
+        rec = (batch.get("clips") or {}).get(cid) or {}
+        preview = rec.get("preview")
+        clip = next((c for c in clips if str(c.get("id")) == cid), None)
+        if rec.get("state") != "done" or not isinstance(preview, dict) or clip is None:
+            skipped.append(cid)
+            continue
+        facts = _clip_facts_for(directory, clip, clips)
+        _write_prompt_files(directory, clip, preview.get("prompt_json") or {}, path, facts=facts)
+        saved.append(cid)
+    _batch_path(directory).unlink(missing_ok=True)
+    if not saved:
+        raise JobOpsError("没有可保存的片段（所选段改写失败或不存在）")
+    result = _after_save(settings, job, directory)
+    if isinstance(result, dict):
+        result["saved"] = saved
+        result["skipped"] = skipped
+    return result
+
+
 def save_all_json(
     settings: Settings,
     job_id: str,
@@ -343,6 +557,7 @@ def save_all_json(
     clips_doc: dict[str, Any] | None = None,
     by_clip: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _reject_if_busy(settings)
     directory, job = get_job(settings, job_id)
     if clips_doc is not None:
         atomic_write_json(directory / "clips.json", clips_doc)
@@ -382,6 +597,7 @@ def settings_public(settings: Settings) -> dict[str, Any]:
     smtp = settings.smtp or {}
     comfy = settings.providers.get("comfy") or {}
     vl = settings.providers.get("vl") or {}
+    llm = settings.providers.get("llm") or {}
     cookie_ok, cookie_detail = cookie_ready(settings)
     expired = bool(cookie_ok and cookie_expired(settings))
     if not cookie_ok:
@@ -401,8 +617,13 @@ def settings_public(settings: Settings) -> dict[str, Any]:
         "bind_host": settings.bind_host(),
         "bind_port": settings.bind_port(),
         "comfy_base_url": str(comfy.get("base_url") or "http://127.0.0.1:8188"),
-        "vl_kind": str(vl.get("kind") or "cursor_sdk"),
-        "vl_model": str(vl.get("model") or ""),
+        "llm_kind": str(llm.get("kind") or "anthropic_sdk"),
+        "llm_base_url": str(llm.get("base_url") or ""),
+        "llm_model": str(llm.get("model") or ""),
+        "llm_has_api_key": bool(str(llm.get("api_key") or "").strip() or (os.environ.get("ANTHROPIC_API_KEY") or "").strip()),
+        "llm_api_key_from_env": bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip()),
+        "vl_kind": str(vl.get("kind") or llm.get("kind") or "anthropic_sdk"),
+        "vl_model": str(vl.get("model") or llm.get("model") or ""),
         "gpu_memory_gb": settings.h3.get("gpu_memory_gb"),
         "hang_timeout_sec": settings.default.get("hang_timeout_sec"),
         "generate_clip_timeout_sec": settings.default.get("generate_clip_timeout_sec"),
@@ -510,6 +731,25 @@ def patch_settings(settings: Settings, body: dict[str, Any]) -> dict[str, Any]:
         comfy = dict(providers.get("comfy") or {})
         comfy["base_url"] = str(body["comfy_base_url"]).rstrip("/")
         providers["comfy"] = comfy
+        current["providers"] = providers
+    llm_patch_keys = ("llm_kind", "llm_base_url", "llm_model", "llm_api_key")
+    if any(body.get(key) is not None for key in llm_patch_keys):
+        providers = dict(current.get("providers") or {})
+        llm = dict(providers.get("llm") or {})
+        if body.get("llm_kind") is not None:
+            kind = str(body["llm_kind"]).strip()
+            if kind not in {"anthropic_sdk", "cursor_sdk"}:
+                raise JobOpsError("Provider 只能是 anthropic_sdk 或 cursor_sdk")
+            llm["kind"] = kind
+        if body.get("llm_base_url") is not None:
+            llm["base_url"] = str(body["llm_base_url"]).strip().rstrip("/")
+        if body.get("llm_model") is not None:
+            llm["model"] = str(body["llm_model"]).strip()
+        if body.get("llm_api_key") is not None:
+            # 空串 = 清除，回落到环境变量 ANTHROPIC_API_KEY
+            llm["api_key"] = str(body["llm_api_key"]).strip()
+        if llm:
+            providers["llm"] = llm
         current["providers"] = providers
     if body.get("gpu_memory_gb") is not None:
         h3 = dict(current.get("h3") or {})
