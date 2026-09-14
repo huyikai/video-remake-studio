@@ -278,6 +278,113 @@ def _windows_for_clip(windows: list[dict[str, Any]], t0: float, t1: float) -> li
     return [scored[0][1]] if scored else []
 
 
+def _classify_thread(settings: Settings, facts: dict[str, Any]) -> str | None:
+    """前置判定：本段对白是上一段说话人论调的延续（画外音），还是对方的回应。
+
+    这个判断和写稿解耦——写稿大调用里模型会被口型证据带偏（把听众的反应性
+    嘴部微动当成说话），单独一次轻量文本分类更稳。返回
+    continuation / reply / unclear；没有线程或没有对白返回 None。
+    """
+    thread = facts.get("prev_thread")
+    lines = [str(s.get("text") or "").strip() for s in (facts.get("speech") or []) if s.get("text")]
+    if not thread or not lines:
+        return None
+    prev_speaker = thread["turns"][-1][0] if thread.get("turns") else "?"
+    prev_lines = "、".join(f"「{t}」" for _sp, t in (thread.get("turns") or [])[-3:]) or "（无记录）"
+    cur_lines = "、".join(f"「{t}」" for t in lines)
+    prompt = (
+        "判断下面这批句子和上一段对话的关系。只看内容，不要解释。\n\n"
+        f"上一段：说话人 {prev_speaker} 说了：{prev_lines}\n"
+        f"本段句子：{cur_lines}\n\n"
+        "判定标准：本段句子顺着上一段的论调继续说（接着数落、接着陈述同一件事、"
+        "语气和立场延续，像是同一番话没说完）→ continuation；"
+        "本段是在回应、反驳、回答、换了个话头或立场 → reply；拿不准 → unclear。\n"
+        '只输出 JSON：{"kind":"continuation"} 或 {"kind":"reply"} 或 {"kind":"unclear"}'
+    )
+    try:
+        raw = generate_text(settings, prompt, thinking=False, max_new_tokens=512)
+        doc = parse_json_payload(raw)
+        kind = str((doc or {}).get("kind") or "").strip().lower()
+        return kind if kind in {"continuation", "reply", "unclear"} else "unclear"
+    except Exception:  # noqa: BLE001 - 判定失败不拦写稿，退回提示词内自行判断
+        return "unclear"
+
+
+def _prev_thread(root: Path, clips: list[dict[str, Any]], idx: int) -> dict[str, Any] | None:
+    """同组上一段的对话线程：谁（S 号+外观摘要）说了哪句。
+
+    h3_12 这类段的说话人身份要接着前段判断——前段 S1 在问，本段画面里换了人，
+    通常就是 S2 在答。从上一段落盘的 prompt 抽 (Sx)→<d> 归属和人物表。
+    """
+    j = idx - 1
+    if j < 0 or clips[j].get("cast_reset") or clips[idx].get("cast_reset"):
+        return None
+    prev = clips[j]
+    pid = str(prev["id"])
+    doc_path = root / "prompts" / f"{pid}.json"
+    txt_path = root / "prompts" / f"{pid}.txt"
+    if not doc_path.is_file() or not txt_path.is_file():
+        return None
+    try:
+        doc = json.loads(doc_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    speakers = [
+        {
+            "id": str(s.get("id") or ""),
+            "lock": str(s.get("lock") or "")[:110],
+            "voice": str(s.get("voice") or "")[:110],
+        }
+        for s in (doc.get("speakers") or [])
+        if str(s.get("id") or "").startswith("S")
+    ]
+    txt = txt_path.read_text(encoding="utf-8")
+    turns: list[tuple[str, str]] = []
+    last_sp = "?"
+    for m in re.finditer(r"<d>\[[A-Za-z]+\]\s*([^<]*)</d>", txt):
+        back = txt[max(0, m.start() - 400) : m.start()]
+        sp = None
+        for sm in re.finditer(r"\(?(S\d+)(?:,S\d+)*\)?'s?", back):
+            sp = f"({sm.group(1)})"
+        if sp is None:
+            sp = last_sp  # 附近没点名 = 前一句的人接着说
+        last_sp = sp
+        turns.append((sp, m.group(1).strip()))
+    if not turns:
+        return None
+    return {"id": pid, "speakers": speakers, "turns": turns}
+
+
+def _attach_mouth_evidence(speech: list[dict[str, Any]], mouths: list[str]) -> None:
+    """把拍表口型归属到每句对白：源片谁嘴动谁在说（地面真值），压过语义推断。
+
+    mouth 字符串形如「中 open 37.88-39.38」「右蓝衣男 open 74.00-74.50」（源片秒）。
+    解析不出的行跳过；一句命中多人的并列显示。
+    """
+    import re as _re
+
+    parsed: list[tuple[str, str, float, float]] = []
+    for raw in mouths or []:
+        m = _re.match(r"^(.+?)\s+(open|closed)\s+(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)$", str(raw).strip())
+        if m:
+            parsed.append((m.group(1).strip(), m.group(2), float(m.group(3)), float(m.group(4))))
+    if not parsed:
+        for item in speech:
+            item.pop("_s0", None)
+            item.pop("_s1", None)
+        return
+    for item in speech:
+        s0, s1 = item.pop("_s0", 0.0), item.pop("_s1", 0.0)
+        who: set[str] = set()
+        for name, state, m0, m1 in parsed:
+            if state != "open":
+                continue
+            if min(s1, m1) - max(s0, m0) > 0.15:
+                who.add(name)
+        if who:
+            item["mouth"] = "、".join(sorted(who))
+
+
 def clip_facts(
     clip: dict[str, Any],
     beats: dict[str, Any],
@@ -329,12 +436,16 @@ def clip_facts(
             "b": _local(min(t1, float(s["t1"])), clip),
             "text": str(s.get("text") or "").strip(),
             "emotion": str(((s.get("vocal_emotion") or {}).get("label")) or ""),
+            "_s0": float(s.get("t0") or 0),
+            "_s1": float(s.get("t1") or 0),
         }
         for s in iter_clip_speech(clip, dialogue, clips)
     ]
+    _attach_mouth_evidence(speech, mouths)
     vision = _dedupe(uniq)
     frames = _clip_stills(clip, root, limit=MAX_FRAMES)
     neighbors: list[dict[str, Any]] = []
+    idx: int | None = None
     if clips:
         idx = next((i for i, c in enumerate(clips) if c.get("id") == clip.get("id")), None)
         if idx is not None:
@@ -368,6 +479,7 @@ def clip_facts(
         "children": max(children) if children else None,
         "mouths": mouths,
         "neighbors": neighbors,
+        "prev_thread": _prev_thread(root, clips, idx) if idx is not None else None,
     }
 
 
@@ -394,6 +506,7 @@ def build_prompt(
     ) or "  （这一段拍表格是空的，必须按附图写）"
     speech = "\n".join(
         f"  {_fmt(s['a'])}-{_fmt(s['b'])}  「{s['text']}」（语气 {s['emotion'] or '未标'}）"
+        + (f"（源片口型：{s['mouth']} 在说）" if s.get("mouth") and facts.get("thread_verdict") != "continuation" else "")
         for s in facts["speech"]
     ) or "  （本段没有对白）"
     cuts = "、".join(_fmt(c) + "s" for c in facts["cuts"]) or "（自动检测没报，你看图自己判断）"
@@ -495,6 +608,45 @@ def build_prompt(
             )
         neighbor_block = "\n".join(rows)
 
+    thread = facts.get("prev_thread")
+    verdict = facts.get("thread_verdict")
+    thread_block = ""
+    if thread:
+        sp_lines = "\n".join(
+            f"  {s['id']}：{s['lock']}" + (f"\n    声线：{s['voice']}" if s.get("voice") else "")
+            for s in thread["speakers"]
+        ) or "  （无）"
+        turn_lines = "\n".join(f"  {sp}：「{text[:24]}」" for sp, text in thread["turns"][-4:])
+        prev_sp = thread["turns"][-1][0] if thread.get("turns") else "?"
+        if verdict == "continuation":
+            thread_block = (
+                f"## 说话人判定（已定，照办，不要再自行判断）\n\n"
+                f"本段句子是 {thread['id']} 里 {prev_sp} 论调的延续——**声音属于 {prev_sp}，复用其声线锁**。\n"
+                f"在不在画面里，看附图定：\n"
+                f"- 附图里的人**就是 {prev_sp} 本人**（对照上面的外观锁）→ 他在画面里继续说，正常写他的嘴型和 <d>\n"
+                f"- 附图里的人**是别人**（听众）或没人在说 → 声音从画外继续：每句写 "
+                f"`{prev_sp} 的声音 continues in an off-screen voiceover: <d>[Chinese] 原句</d> "
+                f"while the on-screen person's lips remain completely closed`；"
+                f"画面里的人只演听与反应（lips pressed into a thin line, jaw clenched + 表情/身体反应），"
+                f"**不要把画面里的口型开合写成说话**——那是反应微动\n"
+                f"- 上一段人物与对白归属：\n{sp_lines}\n{turn_lines}\n\n"
+            )
+        else:
+            guide = (
+                "先判断本段句子和上一段是什么关系，再定说话人：\n"
+                "- **同一论调的延续**（接着骂、接着数落、同一番话没说完）：说话人还是上一段那个 S 号，"
+                "声音从画外继续——`says in an off-screen voiceover`，`<d>` 后紧跟 `while his lips remain completely closed`；"
+                "画面里的人是听众，正向写闭嘴和反应\n"
+                "- **回应、反驳、新话头**：才轮到别人开口；画面里的人开口时才写他的嘴型\n"
+            )
+            if verdict == "reply":
+                guide = "已判定：本段是回应/新话头——轮换说话人，画面里的人开口时写他的嘴型。\n"
+            thread_block = (
+                f"## 上一段对话线程（本段说话人接着这个线程判断）\n\n"
+                f"{thread['id']} 的人物：\n{sp_lines}\n"
+                f"{thread['id']} 的对白归属：\n{turn_lines}\n\n{guide}\n"
+            )
+
     return f"""{mission}
 
 {head}
@@ -529,13 +681,22 @@ def build_prompt(
 
 {speech}
 
-## 邻条对白（禁止跟读，禁止写进本条任何 <d>）
+{thread_block}## 邻条对白（禁止跟读，禁止写进本条任何 <d>）
 
 {neighbor_block}
 
 ## {lock_head}
 
 {reset}{locked}
+
+## 表演技法（逐字用这些英文句式）
+
+- 幅度写死一档并带上限：微表情 `restrained micro-expression at small amplitude` / 小幅度 `small, contained movements` / 中等 `clear but natural expression` / 大幅度 `large, forceful movement`（大幅度要有原片依据）。H3 没有 Negative Prompt，过火禁项正向写进正文、具体到肌肉：`no puffed cheeks, no wrinkled nose, no exaggerated frown, no comedic mugging`、`her voice never rises to a shout`。禁止 `not too angry` / `don't overact` / `subtle`——H3 读不出程度
+- 情绪按节拍渐进，不要一个词铺满整条；用带程度词的短句落在节拍上：`a light proud streak surfaces only as she speaks`
+- 运镜三要素（运动类型 + 幅度 + 速度），写成自然英语动作：`The camera pushes in with small amplitude at slow speed toward the letter in her hands`。可用：Zoom In/Out、Push In/Pull Out、Pan Left/Right、Truck Left/Right、Tilt Up/Down、Pedestal Up/Down、Arc Shot、Tracking Shot、Static Shot、POV。不动明写 `The camera holds a static shot`
+- 说话人归属判定：先拿本段句子和**上一段对话线程**比内容——**同一论调的延续**（接着数落、同一番话没说完）= 前一个说话人**画外继续说**（`says in an off-screen voiceover`，`<d>` 后紧跟 `while his lips remain completely closed`），本段画面里的人是听众，正向写闭嘴和反应，**不要因为口型检测到开合就让他出声**；**回应/反驳/新话头**才轮换，此时「源片口型：X 在说」确认画面里谁开口。都没有依据时按台词内容推断：喊称谓的是晚辈、通报信息的是搜救方、祈使劝阻的是拦人的、评价嘲讽是说风凉话的旁人
+- 画外音固定写法：`says in an off-screen voiceover`，紧接 `while his lips remain completely closed`
+- 禁止结果态摘要动词：`he rescues the child` / `they are reunited` / `he finds her` 都不算铺满；过程要落成动作链 `pole → wade toward → reach → pull into arms`
 
 ## 规矩
 
@@ -561,7 +722,6 @@ def build_prompt(
 - shots[0].at 必须是 null；后面的 at 严格递增且小于 {_fmt(seconds)}
 - **每一镜至少 {MIN_SHOT:.1f}s**（含最后一镜）。切在 0.15s 的第二镜等于没有首镜，宁可少切一刀
 - style 只写 `live-action photorealistic`，不要 cinematic / beautiful
-- 镜头运动写成自然英语动作，带上运动类型，幅度和速度只在有意义时写；不动就写 holds a static shot
 - overall_soundscape 只写环境音、动作音、非语言人声，不要重复对白，不要写配乐
 - **non_diegetic_music 必须是 N/A**，不要复刻 BGM
 - 描述铺满 0 到 {_fmt(seconds)}s，不要多也不要少
@@ -611,6 +771,14 @@ def assemble_md(doc: dict[str, Any], clip: dict[str, Any], facts: dict[str, Any]
         f"- {n['id']} `{_fmt(n['t0'])}-{_fmt(n['t1'])}`：" + " / ".join(n["lines"])
         for n in (facts.get("neighbors") or [])
     ) or "-（无）"
+    th = facts.get("prev_thread")
+    thread = ""
+    if th:
+        sp_lines = "\n".join(f"- {s['id']}：{s['lock']}" for s in th["speakers"]) or "-（无）"
+        turn_lines = "\n".join(f"- {sp}：「{t[:24]}」" for sp, t in th["turns"][-4:])
+        thread = (
+            f"- 上一段对话线程（{th['id']}），本段说话人接着这个线程判断：\n{sp_lines}\n  对白归属：\n{turn_lines}"
+        )
     vision = "\n".join(
         f"- {_fmt(_local(a, clip))}-{_fmt(_local(b, clip))}s {see}" for a, b, see in facts["vision"]
     ) or "-（空，按附图）"
@@ -647,7 +815,7 @@ def assemble_md(doc: dict[str, Any], clip: dict[str, Any], facts: dict[str, Any]
 
 {speech}
 
-## 邻条对白（不要跟读）
+{thread}## 邻条对白（不要跟读）
 
 {neighbor}
 
@@ -931,6 +1099,7 @@ def build_rewrite_prompt(
     seconds = float(clip["h3_seconds"])
     speech = "\n".join(
         f"  {_fmt(s['a'])}-{_fmt(s['b'])}  「{s['text']}」（语气 {s['emotion'] or '未标'}）"
+        + (f"（源片口型：{s['mouth']} 在说）" if s.get("mouth") and facts.get("thread_verdict") != "continuation" else "")
         for s in facts["speech"]
     ) or "  （本段没有对白）"
     vision = "\n".join(
@@ -948,6 +1117,19 @@ def build_rewrite_prompt(
         for item in facts["neighbors"]:
             rows.append(f"  {item['id']} 源片 {_fmt(item['t0'])}-{_fmt(item['t1'])}s：" + " / ".join(item["lines"]))
         neighbor_block = "\n".join(rows)
+    thread = facts.get("prev_thread")
+    thread_block = ""
+    if thread:
+        sp_lines = "\n".join(
+            f"  {s['id']}：{s['lock']}" + (f"\n    声线：{s['voice']}" if s.get("voice") else "")
+            for s in thread["speakers"]
+        ) or "  （无）"
+        turn_lines = "\n".join(f"  {sp}：「{text[:24]}」" for sp, text in thread["turns"][-4:])
+        thread_block = (
+            f"上一段对话线程（{thread['id']}）——本段说话人接着这个线程判断：\n{sp_lines}\n对白归属：\n{turn_lines}\n"
+            "同一论调的延续=前一个 S 号画外继续说（off-screen voiceover + 画面里的人闭嘴当听众）；"
+            "回应/反驳/新话头=才轮换说话人。\n\n"
+        )
     locked = "\n".join(
         f"  {s.get('id')}：{s.get('lock')}" for s in (current.get("speakers") or [])
     ) or "  （无）"
@@ -1049,6 +1231,10 @@ def rewrite_clip(
         return _mock_rewrite_clip(
             settings, clip, facts, path=path, current=current, edit=edit, log=log
         )
+    if "thread_verdict" not in facts:
+        verdict = _classify_thread(settings, facts)
+        if verdict:
+            facts["thread_verdict"] = verdict
     seconds = float(clip["h3_seconds"])
     allowed = [s["text"] for s in facts["speech"]]
     errors: list[str] = []
@@ -1098,6 +1284,10 @@ def _one_clip(
 ) -> tuple[dict[str, Any], str]:
     seconds = float(clip["h3_seconds"])
     allowed = [s["text"] for s in facts["speech"]]
+    if "thread_verdict" not in facts:
+        verdict = _classify_thread(settings, facts)
+        if verdict:
+            facts["thread_verdict"] = verdict
     errors: list[str] = []
     last = "未知错误"
     for attempt in range(MAX_TRIES):

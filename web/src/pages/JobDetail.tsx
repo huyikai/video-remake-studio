@@ -485,7 +485,10 @@ export default function JobDetail() {
     if (current && preview !== "source") return current[preview]?.file || null;
     return job.media?.[preview] || (preview === "source" ? job.media?.source : null);
   }, [current, job, preview]);
-  const mediaSrc = job && previewRel ? fileUrl(job.id, previewRel) : undefined;
+  // 选中片段看「原片」时只放该段对应的源片区间（媒体片段锚点，浏览器原生支持）
+  const mediaSrc = job && previewRel
+    ? fileUrl(job.id, previewRel) + (preview === "source" && current ? `#t=${current.t0},${current.t1}` : "")
+    : undefined;
 
   function recommendedIds(kind: Exclude<BatchKind, null>, target = videoTarget) {
     if (kind === "scripts") return missingScripts.map((clip) => clip.id);

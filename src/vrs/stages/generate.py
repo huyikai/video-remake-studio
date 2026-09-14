@@ -202,9 +202,27 @@ def quality_complete(
 ) -> bool:
     path = normalize_generate_path(path) if path else job_generate_path(directory)
     root = clip_output_dir(directory, path, quality)
-    # 用 _clip_valid（ffprobe）而不仅 _clip_ready：stage gate / finish 阶段不能放过残缺 mp4。
-    # list endpoint 走 _clip_ready（size-only），见 jobview._quality_flags。
-    return bool(clips) and all(_clip_valid(root / f"{c['id']}.mp4") for c in clips)
+    if not clips:
+        return False
+    # 完成的定义 = 文件齐 **且** 每段视频是用当前脚本生成的。
+    # 只看文件会把改过脚本的旧视频当新结果——next_quality 会直接跳去下一档。
+    progress = _load_json(directory / "generate.json") or {}
+    index = {
+        str(p.get("clip_id")): p
+        for p in (_load_json(directory / "prompts.json") or {}).get("prompts") or []
+    }
+    for clip in clips:
+        cid = str(clip["id"])
+        dest = root / f"{cid}.mp4"
+        if not _clip_valid(dest):
+            return False
+        rec = ((progress.get("clips") or {}).get(cid) or {}).get(quality) or {}
+        recorded = str(rec.get("prompt_hash") or "")
+        item = index.get(cid) or {}
+        ppath = directory / str(item.get("prompt") or f"prompts/{cid}.txt")
+        if recorded != _hash_prompt_file(ppath):
+            return False
+    return True
 
 
 def quality_present(
@@ -322,28 +340,34 @@ def run_generate(
             raise_if_cancelled(directory)
             clip_id = str(clip["id"])
             dest = dest_dir / f"{clip_id}.mp4"
+            skipped_item = prompt_index.get(clip_id) or {}
+            skipped_path = directory / str(
+                skipped_item.get("prompt") or f"prompts/{clip_id}.txt"
+            )
+            current_prompt_hash = _hash_prompt_file(skipped_path)
+            rec = (progress["clips"].setdefault(clip_id, {})).setdefault(quality, {})
             if _clip_valid(dest):
-                skipped += 1
-                rec = (progress["clips"].setdefault(clip_id, {})).setdefault(quality, {})
-                # 与下方实际生成路径保持一致：即便跳过也写入 prompt_hash，
-                # 否则这条 clip 永久进 jobview 的"无 hash → 未知"分支。
-                skipped_item = prompt_index.get(clip_id) or {}
-                skipped_path = directory / str(
-                    skipped_item.get("prompt") or f"prompts/{clip_id}.txt"
+                recorded = str(rec.get("prompt_hash") or "")
+                # 跳过的前提：视频确实是用当前脚本生成的。脚本改过 → 旧视频作废，重新生成。
+                if recorded and recorded == current_prompt_hash:
+                    skipped += 1
+                    rec.update(
+                        {
+                            "status": "done",
+                            "file": f"{rel_dir}/{clip_id}.mp4",
+                            "prompt_hash": recorded,
+                        }
+                    )
+                    continue
+                _log(
+                    directory,
+                    f"{clip_id} {quality} 脚本已更新（旧视频作废），重新生成",
                 )
-                rec.update(
-                    {
-                        "status": "done",
-                        "file": f"{rel_dir}/{clip_id}.mp4",
-                        "prompt_hash": _hash_prompt_file(skipped_path),
-                    }
-                )
-                continue
             item = prompt_index.get(clip_id)
             if item is None:
                 raise GenerateError(f"{clip_id} 在 prompts.json 里没有")
             text = _prompt_text(directory, item, negative)
-            # 与 jobview._clip_quality_status / jobops._backfill_prompt_hash 保持一致：
+            # 与 jobview._clip_quality_status 保持一致：
             # 用磁盘上 prompt.txt 的原始字节算 hash，不要 .strip()（_prompt_text 已 strip，
             # 但 assemble_txt 会补尾换行，三处算法必须统一）。
             prompt_path = directory / str(item.get("prompt") or f"prompts/{clip_id}.txt")

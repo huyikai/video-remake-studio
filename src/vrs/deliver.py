@@ -67,8 +67,11 @@ def trim_and_concat(
     dest: Path,
     work_dir: Path,
     log_path: Path | None = None,
+    master: bool = False,
 ) -> list[Path]:
-    """把每段裁到源片时长再硬切拼接。"""
+    """把每段裁到源片时长再硬切拼接。
+
+    master=True 时（仅 finish 成片链路用）每段音频先做响度归一 + 塌单声。"""
     work_dir.mkdir(parents=True, exist_ok=True)
     pieces: list[Path] = []
     for clip in clips:
@@ -82,6 +85,10 @@ def trim_and_concat(
             trim_duration(src, piece, play, log_path=log_path)
         else:
             piece.write_bytes(src.read_bytes())
+        if master:
+            from vrs.audio import normalize_piece_audio
+
+            normalize_piece_audio(piece, piece, play, log_path=log_path)
         pieces.append(piece)
     concat_videos(pieces, dest, log_path=log_path)
     return pieces

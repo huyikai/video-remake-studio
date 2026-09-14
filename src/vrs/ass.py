@@ -102,9 +102,19 @@ def write_ass(
     *,
     default_region: str = "bottom",
     play_res: tuple[int, int] = (1920, 1080),
+    audio: Path | None = None,
 ) -> int:
     spans = concat_spans(clips)
     events = _events_from_dialogue(dialogue, spans, default_region=default_region)
+    if audio is not None:
+        # 字幕贴真实语音（H3 实际开口时间偏离脚本节拍时，源片推算会错位）；
+        # 检测不可靠时 align 内部保留脚本时间，最差等于现状。
+        try:
+            from vrs.audio import align_events_to_speech, speech_islands
+
+            events = align_events_to_speech(events, speech_islands(audio))
+        except Exception:  # noqa: BLE001 - 对齐失败退回脚本时间
+            pass
     width, height = play_res
     header = f"""[Script Info]
 ScriptType: v4.00+

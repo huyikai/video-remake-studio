@@ -11,6 +11,9 @@ from typing import Any
 
 HAN = re.compile(r"[\u4e00-\u9fff]")
 D_BLOCK = re.compile(r"<d>(.*?)</d>", re.S)
+# 官方规格 4.2：表演节拍 From a.aa to b.bb（模型常写 "0.00s"，s 后缀要容忍）
+FROM_BEAT = re.compile(r"\bFrom (\d+(?:\.\d+)?)s? to (\d+(?:\.\d+)?)s?\b")
+
 LANG_TAG = re.compile(r"^\s*\[[A-Za-z]+\]\s*")
 HEADER_SEC = re.compile(r"aligns with the (\d+\.\d{2})-second mark")
 
@@ -30,11 +33,14 @@ BANNED = (
 )
 # 内容级的「画面里出现文字」描述（如片尾主题字 four large Chinese characters ... fades in）。
 # H3 烧字必乱码——这类描述要剥离，文字由后期 ASS 烧。刻意收窄避免误报：
-# 不含单个 character（角色/字符两义）、不含 words+show（"her words show hesitation"）。
+# 不含单个 character（角色/字符两义）、不含 words+show（"her words show hesitation"）；
+# 否定式（no logo appears / never ...）是正向压制写法，不算烧字。
 BURN_TEXT = re.compile(
+    r"(?<!\bno )(?<!\bnever )(?<!\bnot )"
     r"\b(?:large|big|bold|red|white|golden|glowing|neon|giant|four|three|two|five)?\s*"
     r"(?:Chinese|hanzi|kanji)\s+(?:characters?|letters?|glyphs?|words?|text|titles?)\b"
-    r"|\b(?:letters?|glyphs?|titles?|logos?|slogans?)\s+"
+    r"|(?<!\bno )(?<!\bnever )(?<!\bnot )"
+    r"\b(?:letters?|glyphs?|titles?|logos?|slogans?)\s+"
     r"(?:fade|fades|appear|appears|emerge|emerges|render|renders|display|displays|show|shows|burn|burns)\b",
     re.I,
 )
@@ -292,6 +298,28 @@ def check_burned_text(clip_id: str, body: str) -> list[str]:
     ]
 
 
+def check_beats(clip_id: str, body: str, seconds: float) -> list[str]:
+    """From 节拍要从 0 无缝铺满到本条时长（0.15s 容差，兼容两位小数舍入）。
+
+    空档的那段 H3 会自由发挥——「演的不是那件事」多半是这里空的；
+    重叠则同一时间收到两套表演指令。
+    """
+    beats = sorted((float(a), float(b)) for a, b in FROM_BEAT.findall(str(body or "")))
+    if not beats:
+        return [f"{clip_id}: 英文里没有 From 节拍，整条交给 H3 自由发挥"]
+    out: list[str] = []
+    if beats[0][0] > 0.15:
+        out.append(f"{clip_id}: 节拍从 {beats[0][0]:.2f}s 才开始，开头 {beats[0][0]:.2f}s 没写")
+    for (_, b1), (a2, _b2) in zip(beats, beats[1:]):
+        if a2 - b1 > 0.15:
+            out.append(f"{clip_id}: 节拍在 {b1:.2f}s–{a2:.2f}s 空着，这段没人告诉 H3 演什么")
+        if b1 - a2 > 0.15:
+            out.append(f"{clip_id}: 节拍 {a2:.2f}s 与上一段结束 {b1:.2f}s 重叠，同一时间两套表演指令")
+    if seconds - beats[-1][1] > 0.15:
+        out.append(f"{clip_id}: 节拍只写到 {beats[-1][1]:.2f}s，本条 {seconds:.2f}s，尾部没写")
+    return out
+
+
 def check_fields(clip_id: str, prompt: str) -> list[str]:
     return [f"{clip_id}: 缺 {field.rstrip(':')}" for field in CORE_FIELDS if field not in str(prompt or "")]
 
@@ -317,6 +345,7 @@ def check_clip(doc: dict[str, Any], seconds: float, allowed: list[str]) -> list[
         str(doc.get(k) or "") for k in ("overall_soundscape", "non_diegetic_music")
     )
     out = check_shots(clip_id, shots, seconds)
+    out += check_beats(clip_id, body, seconds)
     out += check_dialogue(clip_id, body, allowed)
     out += check_coverage(clip_id, body, allowed)
     out += check_repeat(clip_id, body)
