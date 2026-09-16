@@ -240,16 +240,26 @@ def speech_islands(path: Path, *, sr: int = 16000) -> list[tuple[float, float]]:
 def align_events_to_speech(
     events: list[tuple],
     islands: list[tuple[float, float]],
+    spans: list[dict] | None = None,
 ) -> list[tuple]:
     """把对白事件贴到最近的语音岛上（中心距最近且未被他句占用，1.5s 内有效）。
 
     H3 漂移常达 1 秒、整句挪出脚本窗口，按重叠找会漏贴；
     检测不可靠或没贴上时保留脚本时间，最差等于现状。
+    spans（合剪区间）给出时，全局找不到岛的事件回退到**自己片段区间内**找未占用的岛
+    ——片段内的声音只能是本段的台词，不受全局 1.5s 信任阈限制（漂移可达 2s+）。
     """
     if not islands:
         return events
     used: set[int] = set()
     out: list[tuple] = []
+
+    def span_of(t: float) -> tuple[float, float] | None:
+        for sp in spans or []:
+            if float(sp.get("cat0", -1)) - 0.05 <= t < float(sp.get("cat1", 0)) + 0.05:
+                return (float(sp["cat0"]), float(sp["cat1"]))
+        return None
+
     for ev in events:
         style, t0, t1, text = ev[0], ev[1], ev[2], ev[3]
         if style != "bottom" or t1 - t0 <= 0.05:
@@ -265,6 +275,19 @@ def align_events_to_speech(
             if d < best_d:
                 best_d = d
                 best = (i, a, b)
+        if best is None and spans is not None:
+            # 回退：本片段合剪区间内未占用的岛，最近者即本段台词
+            span = span_of(t0)
+            if span is not None:
+                fallback_d = None
+                for i, (a, b) in enumerate(islands):
+                    if i in used:
+                        continue
+                    if a >= span[0] - 0.3 and b <= span[1] + 0.3:
+                        d = abs((a + b) / 2 - center)
+                        if fallback_d is None or d < fallback_d:
+                            fallback_d = d
+                            best = (i, a, b)
         if best is None:
             out.append(ev)
             continue

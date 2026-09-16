@@ -29,8 +29,9 @@ from vrs.textjson import parse_json_payload
 # 改发 1920x1080 的单帧：一张 100KB，细节留得住，上传也快得多。
 MAX_FRAMES = 8
 MAX_TRIES = 5
-# rev 9：T2VA 也按故事组传递外观锁（组内正文锁句必须逐字 = 组锚），旧稿正文锁句不可信，全量重写
-WRITER_REV = 9
+# rev 10：pad 段（源片 < H3 下限）对白/节拍改为 1:1 落位并限制在源片时长内（此前被
+# _local 拉伸到裁剪线之后，成片裁掉尾部时把后半段对白和动作一起裁掉）。旧稿全部作废。
+WRITER_REV = 10
 # 金标 event_chain：硬切落在区间末尾，最后 0.2s 的格常是下一条第一帧。
 EDGE = 0.20
 
@@ -77,10 +78,18 @@ def _stamp(seconds: float) -> str:
 
 
 def _local(src: float, clip: dict[str, Any]) -> float:
-    """源片时间换成本条内部时间。网格对齐让时长有 ±0.15s 漂移，按比例缩。"""
+    """源片时间换成本条内部时间。
+
+    pad 段（源片短于 H3 网格下限，成片后期按源片时长裁掉尾部保持）：
+    对白和节拍必须落在 0–源片时长 内，否则会被裁掉——所以**不按比例拉伸**，
+    直接 1:1 落位。非 pad 段（源片 ≥ H3 时长）维持比例缩放。
+    """
     span = float(clip["source_seconds"]) or 1.0
-    ratio = float(clip["h3_seconds"]) / span
-    return max(0.0, min(float(clip["h3_seconds"]), (float(src) - float(clip["t0"])) * ratio))
+    h3 = float(clip["h3_seconds"])
+    if h3 > span + 0.05:
+        return max(0.0, min(span, float(src) - float(clip["t0"])))
+    ratio = h3 / span
+    return max(0.0, min(h3, (float(src) - float(clip["t0"])) * ratio))
 
 
 def _dedupe(cells: list[dict[str, Any]], *, lookback: int = 2, reach: float = 1.5) -> list[tuple[float, float, str]]:
@@ -587,11 +596,18 @@ def build_prompt(
 
     pad = ""
     if clip.get("padded"):
+        src_len = _fmt(float(clip.get("source_seconds") or 0))
         pad = (
-            f"原片这一拍只有 {_fmt(float(clip.get('source_seconds') or 0))}s，"
-            f"成片写成 {_fmt(seconds)}s。"
-            "多出来的时间只用来演本条这一环还没演完的过程，或保持本条末帧的人和景做反应。"
-            "不要新开一场，不要把下一幕拉进来，不要把结果态拉长到结束。\n"
+            f"## 本条会被后期裁剪（写稿前必读）\n\n"
+            f"原片这一拍只有 {src_len}s，成片写成 {_fmt(seconds)}s。\n"
+            f"后期会按 {src_len}s 裁掉 {_fmt(seconds)}s 之后的全部画面——所以：\n"
+            f"- **所有对白和关键动作必须落在 0–{src_len}s 内**，一句都不能安排在它后面\n"
+            f"- 对白严格按「对白原文」标的时间说：两句之间不要插入长停顿（间隔不超过原片停顿 +0.5s），"
+            f"更不要把台词推迟到保持段——H3 渲染会把推迟的台词连同画面一起裁掉\n"
+            f"- {src_len}s 之后只写末帧静止保持：人和景不动，最多呼吸和微小反应，"
+            f"写成 `From {src_len} to {_fmt(seconds)} … the frame holds on the same composition, "
+            f"both figures still` 这类保持句，**不写新动作、不写对白、不写表情变化**\n"
+            f"- 禁止「继续演没演完的过程」——那部分会被裁掉，看起来就是动作凭空中断\n\n"
         )
 
     retry = ""
@@ -1046,7 +1062,7 @@ def _mock_rewrite_clip(
         _preserve_locks(current, doc)
     txt = assemble_txt(doc, clip, path)
     errors = (
-        check_clip(doc, seconds, allowed)
+        check_clip(doc, seconds, allowed, source_seconds=float(clip.get("source_seconds") or 0))
         + check_header(clip["id"], txt, seconds)
         + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
     )
@@ -1059,7 +1075,7 @@ def _mock_rewrite_clip(
         doc["shots"] = shots
         txt = assemble_txt(doc, clip, path)
         errors = (
-            check_clip(doc, seconds, allowed)
+            check_clip(doc, seconds, allowed, source_seconds=float(clip.get("source_seconds") or 0))
             + check_header(clip["id"], txt, seconds)
             + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
         )
@@ -1258,7 +1274,7 @@ def rewrite_clip(
         _preserve_locks(current, doc)
         txt = assemble_txt(doc, clip, path)
         errors = (
-            check_clip(doc, seconds, allowed)
+            check_clip(doc, seconds, allowed, source_seconds=float(clip.get("source_seconds") or 0))
             + check_header(clip["id"], txt, seconds)
             + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
         )
@@ -1311,7 +1327,7 @@ def _one_clip(
         doc["generate_path"] = path
         txt = assemble_txt(doc, clip, path)
         errors = (
-            check_clip(doc, seconds, allowed)
+            check_clip(doc, seconds, allowed, source_seconds=float(clip.get("source_seconds") or 0))
             + check_header(clip["id"], txt, seconds)
             + check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
         )
@@ -1385,7 +1401,7 @@ def _cached(
     txt = assemble_txt(doc, clip, path)
     allowed = [s["text"] for s in facts["speech"]]
     if (
-        check_clip(doc, seconds, allowed)
+        check_clip(doc, seconds, allowed, source_seconds=float(clip.get("source_seconds") or 0))
         or check_header(clip["id"], txt, seconds)
         or check_mode(clip["id"], txt, wants_keyframe=bool(PATH_KEYFRAMES.get(path)))
     ):

@@ -104,6 +104,30 @@ def _hash_prompt_file(path: Path) -> str:
         return ""
 
 
+def _pad_trim_line(clip: dict[str, Any]) -> float | None:
+    """pad 段的合剪裁剪线（源片时长）；非 pad 段返回 None。"""
+    src = float(clip.get("source_seconds") or 0)
+    h3 = float(clip.get("h3_seconds") or 0)
+    if src > 0.05 and h3 > src + 0.05:
+        return src
+    return None
+
+
+def _speech_over_trim(dest: Path, trim_line: float) -> float:
+    """渲后语音门禁：语音岛越过裁剪线的最远位置（0 = 全在线内 / 检测不可用）。
+
+    H3 生成时会把台词推迟（实测 +1.3s），脚本机检拦不住——只能渲完量音频。
+    """
+    try:
+        from vrs.audio import speech_islands
+
+        islands = speech_islands(dest)
+    except Exception:  # noqa: BLE001 - 检测失败不拦渲染
+        return 0.0
+    over = max((b for _a, b in islands), default=0.0)
+    return over if over > trim_line + 0.12 else 0.0
+
+
 def _clip_ready(path: Path) -> bool:
     # 文件存在 + 至少 1KB：足以排除空文件、半截文件。
     # 不再 ffprobe 校验 —— /api/jobs 列表接口会对所有 clip 各 quality 跑一次，
@@ -222,6 +246,15 @@ def quality_complete(
         ppath = directory / str(item.get("prompt") or f"prompts/{cid}.txt")
         if recorded != _hash_prompt_file(ppath):
             return False
+        # pad 段的语音必须在线内：H3 渲染漂移会把台词推迟过裁剪线，hash 查不出来。
+        # 带 play override = 已接受渲染并延长了裁剪线，不再拦。
+        trim_line = _pad_trim_line(clip)
+        if (
+            trim_line is not None
+            and not rec.get("play")
+            and _speech_over_trim(dest, trim_line) > 0
+        ):
+            return False
     return True
 
 
@@ -273,6 +306,7 @@ def _concat_quality(
         dest=dest,
         work_dir=dest_dir / "trimmed",
         log_path=directory / "logs" / "generate.log",
+        quality=quality,
     )
     return f"output/{path}/{quality}.mp4"
 
@@ -349,7 +383,18 @@ def run_generate(
             if _clip_valid(dest):
                 recorded = str(rec.get("prompt_hash") or "")
                 # 跳过的前提：视频确实是用当前脚本生成的。脚本改过 → 旧视频作废，重新生成。
-                if recorded and recorded == current_prompt_hash:
+                hash_ok = bool(recorded) and recorded == current_prompt_hash
+                trim_line = _pad_trim_line(clip)
+                speech_ok = True
+                if hash_ok and trim_line is not None:
+                    over = _speech_over_trim(dest, trim_line)
+                    if over > 0:
+                        speech_ok = False
+                        _log(
+                            directory,
+                            f"{clip_id} {quality} 语音越过裁剪线 {trim_line:.2f}s（延到 {over:.2f}s），旧视频作废重渲",
+                        )
+                if hash_ok and speech_ok:
                     skipped += 1
                     rec.update(
                         {
@@ -359,10 +404,11 @@ def run_generate(
                         }
                     )
                     continue
-                _log(
-                    directory,
-                    f"{clip_id} {quality} 脚本已更新（旧视频作废），重新生成",
-                )
+                if not hash_ok:
+                    _log(
+                        directory,
+                        f"{clip_id} {quality} 脚本已更新（旧视频作废），重新生成",
+                    )
             item = prompt_index.get(clip_id)
             if item is None:
                 raise GenerateError(f"{clip_id} 在 prompts.json 里没有")
@@ -392,7 +438,7 @@ def run_generate(
                         steps=int(params["steps"]),
                         megapixels=float(params["megapixels"]),
                         aspect=aspect,
-                        seed=_seed(str(job["id"]), clip_id, quality),
+                        seed=_seed(str(job["id"]), clip_id, quality) + (attempt - 1),
                         filename_prefix=prefix,
                         dest=dest,
                         timeout=timeout,
@@ -403,16 +449,41 @@ def run_generate(
                         scheduler=str(params["scheduler"]) if params.get("scheduler") else None,
                         abort=lambda: cancel_requested(directory),
                     )
+                    trim_line = _pad_trim_line(clip)
+                    gate_over = 0.0
+                    if trim_line is not None:
+                        gate_over = _speech_over_trim(dest, trim_line)
+                        if gate_over > 0:
+                            if attempt >= clip_tries:
+                                # 重试用尽：H3 自然语速说不进源片窗口（seed 无关的稳定漂移）。
+                                # 接受渲染，延长本段裁剪线到语音结束 +0.25s——内容完整优先于节奏还原，
+                                # 合剪和字幕时间轴都会读这个 override。
+                                play = min(seconds, gate_over + 0.25)
+                                _log(
+                                    directory,
+                                    f"{clip_id} {quality} 语音越线但重试用尽，接受渲染并延长裁剪线到 {play:.2f}s",
+                                )
+                            else:
+                                # 渲染漂移：H3 把台词推迟过了裁剪线，这句会被合剪裁掉。
+                                # 换 seed 重掷（漂移是随机的，重掷大概率落回线内）。
+                                dest.unlink(missing_ok=True)
+                                last_err = GenerateError(
+                                    f"语音越过裁剪线 {trim_line:.2f}s（延到 {gate_over:.2f}s），台词会被裁掉"
+                                )
+                                _log(directory, f"{clip_id} {quality} 第 {attempt} 次渲后语音越线：{last_err}")
+                                continue
                     rec = (progress["clips"].setdefault(clip_id, {})).setdefault(quality, {})
-                    rec.update(
-                        {
-                            "status": "done",
-                            "file": f"{rel_dir}/{clip_id}.mp4",
-                            "prompt_id": prompt_id,
-                            "prompt_hash": _hash_prompt_file(prompt_path),
-                            "attempts": attempt,
-                        }
-                    )
+                    rec_payload = {
+                        "status": "done",
+                        "file": f"{rel_dir}/{clip_id}.mp4",
+                        "prompt_id": prompt_id,
+                        "prompt_hash": _hash_prompt_file(prompt_path),
+                        "attempts": attempt,
+                    }
+                    if gate_over > 0:
+                        # 接受渲染 + 延长裁剪线（门禁分支已 log）；合剪/字幕时间轴读这个 play
+                        rec_payload["play"] = min(seconds, gate_over + 0.25)
+                    rec.update(rec_payload)
                     progress["last_clip"] = clip_id
                     progress["last_quality"] = quality
                     progress["last_prompt_id"] = prompt_id

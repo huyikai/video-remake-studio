@@ -69,6 +69,9 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
     mark_stage(job, directory, "finish", "running")
     try:
         raw = out_dir / f"{quality}.raw.mp4"
+        from vrs.deliver import _play_overrides
+
+        play_overrides = _play_overrides(directory, quality)
         trim_and_concat(
             clips,
             src_dir=src_dir,
@@ -76,13 +79,14 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
             work_dir=src_dir / "trimmed",
             log_path=log,
             master=True,
+            overrides=play_overrides,
         )
         _log(directory, f"裁 pad 后拼接 {len(clips)} 段 → {raw.relative_to(directory)}")
         try:
             from vrs.audio import master_audio
             from vrs.deliver import concat_spans
 
-            holes = master_audio(raw, raw, concat_spans(clips), log_path=log)
+            holes = master_audio(raw, raw, concat_spans(clips, play_overrides), log_path=log)
             _log(directory, f"音频母带：响度归一 + 接缝填洞 {holes} 处 → 峰值封顶")
         except Exception as exc:  # noqa: BLE001 - 音频处理失败不拦成片，退回直拼音轨
             _log(directory, f"音频母带失败，退回原始音轨：{exc}")
@@ -104,6 +108,7 @@ def run_finish(settings: Settings, job: dict[str, Any], directory: Path) -> dict
                 clips,
                 default_region=str(settings.default.get("ass_default_region") or "bottom"),
                 audio=raw,
+                overrides=play_overrides,
             )
             burned = out_dir / f"{quality}.burn.mp4"
             burn_ass(scaled, ass_path, burned, log_path=log)

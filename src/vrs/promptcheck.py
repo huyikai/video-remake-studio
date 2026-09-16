@@ -13,6 +13,8 @@ HAN = re.compile(r"[\u4e00-\u9fff]")
 D_BLOCK = re.compile(r"<d>(.*?)</d>", re.S)
 # 官方规格 4.2：表演节拍 From a.aa to b.bb（模型常写 "0.00s"，s 后缀要容忍）
 FROM_BEAT = re.compile(r"\bFrom (\d+(?:\.\d+)?)s? to (\d+(?:\.\d+)?)s?\b")
+# <d> 对白块（含标签），供 check_pad_dialogue 定位对白在文中的位置
+DIALOGUE_LINE = re.compile(r"<d>\s*\[[^\]]+\]\s*(.*?)\s*</d>", re.S)
 
 LANG_TAG = re.compile(r"^\s*\[[A-Za-z]+\]\s*")
 HEADER_SEC = re.compile(r"aligns with the (\d+\.\d{2})-second mark")
@@ -320,6 +322,31 @@ def check_beats(clip_id: str, body: str, seconds: float) -> list[str]:
     return out
 
 
+def check_pad_dialogue(
+    clip_id: str, body: str, seconds: float, source_seconds: float
+) -> list[str]:
+    """pad 段（源片短于成片）的对白必须在源片时长内说完。
+
+    后期按源片时长裁掉尾部保持——对白排在裁剪线之后会被整句裁掉。
+    """
+    if not source_seconds or seconds <= source_seconds + 0.05:
+        return []
+    over: list[str] = []
+    for m in DIALOGUE_LINE.finditer(str(body or "")):
+        # 对白时间 = 它前面最后一个 From 节拍的区间（对白挂在节拍里）
+        prior = FROM_BEAT.findall(str(body or "")[: m.start()])
+        if not prior:
+            continue
+        _a, b = prior[-1]
+        if float(b) > source_seconds + 0.15:
+            line = m.group(1).strip()[:20]
+            over.append(
+                f"{clip_id}: 对白「{line}」排到 {float(b):.2f}s，超出裁剪线 "
+                f"{source_seconds:.2f}s——会被整句裁掉，移到 {source_seconds:.2f}s 之前"
+            )
+    return over[:2]
+
+
 def check_fields(clip_id: str, prompt: str) -> list[str]:
     return [f"{clip_id}: 缺 {field.rstrip(':')}" for field in CORE_FIELDS if field not in str(prompt or "")]
 
@@ -333,8 +360,15 @@ def check_mode(clip_id: str, prompt: str, *, wants_keyframe: bool) -> list[str]:
     return []
 
 
-def check_clip(doc: dict[str, Any], seconds: float, allowed: list[str]) -> list[str]:
-    """单条落盘前的全部自检。返回空列表才算过。"""
+def check_clip(
+    doc: dict[str, Any],
+    seconds: float,
+    allowed: list[str],
+    source_seconds: float | None = None,
+) -> list[str]:
+    """单条落盘前的全部自检。返回空列表才算过。
+
+    source_seconds 传入时启用 pad 段对白越界检查（源片短于成片的段）。"""
     clip_id = str(doc.get("clip_id") or "?")
     shots = list(doc.get("shots") or [])
     body = " ".join(str(s.get("text") or "") for s in shots)
@@ -346,6 +380,8 @@ def check_clip(doc: dict[str, Any], seconds: float, allowed: list[str]) -> list[
     )
     out = check_shots(clip_id, shots, seconds)
     out += check_beats(clip_id, body, seconds)
+    if source_seconds:
+        out += check_pad_dialogue(clip_id, body, seconds, float(source_seconds))
     out += check_dialogue(clip_id, body, allowed)
     out += check_coverage(clip_id, body, allowed)
     out += check_repeat(clip_id, body)
