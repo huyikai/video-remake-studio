@@ -1,5 +1,5 @@
 vrs_runtime_root: ../vrs-runtime
-minmax_h3_root: ../minmaxH3
+minmax_h3_root: ../comfyui
 h3_skills_root: ../vrs-runtime/MiniMax-H3/skills
 whisper_model_dir: ../vrs-runtime/models/whisper
 ocr_model_dir: ../vrs-runtime/models/ocr
@@ -10,6 +10,6 @@ qwen3_aligner_model_dir: ../vrs-runtime/models/qwen3-forcedaligner
 emotion2vec_plus_large_dir: ../vrs-runtime/models/emotion2vec-plus-large
 realesrgan_dir: ../vrs-runtime/models/realesrgan
 auto_deploy: false
-comfy_start_cmd: 'powershell -NoProfile -File "../minmaxH3/start.ps1"'
-comfy_restart_cmd: 'powershell -NoProfile -File "../minmaxH3/start.ps1"'
+comfy_start_cmd: 'powershell -NoProfile -File "../comfyui/start.ps1"'
+comfy_restart_cmd: 'powershell -NoProfile -File "../comfyui/start.ps1"'
 vl_start_cmd: ""

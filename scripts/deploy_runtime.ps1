@@ -26,7 +26,7 @@ $Readme = @"
 vrs-runtime 不进 video-remake-studio 的 git。
 
 把 Whisper / OCR 权重放到 models\ 下。
-H3 请继续用已有的 minmaxH3（本机默认 ../minmaxH3），不要把 Comfy 拷进本目录，除非检测不到现成安装。
+H3 请继续用已有的 comfyui（本机默认 ../comfyui），不要把 Comfy 拷进本目录，除非检测不到现成安装。
 官方 h3-prompt-writing：在此浅克隆 MiniMax-H3 后，把 config/paths.yaml 的 h3_skills_root 指到 MiniMax-H3\skills。
 "@
 Set-Content -Path (Join-Path $Runtime "README.txt") -Value $Readme -Encoding UTF8

@@ -189,7 +189,7 @@ def _boot_comfy(settings: Settings, directory: Path) -> None:
         raise GenerateWaiting(str(exc)) from exc
     boot = float(settings.default.get("hang_timeout_sec") or 180)
     if not wait_until_up(settings, timeout=max(boot, 300.0)):
-        raise GenerateWaiting("Comfy 启动超时，确认 minmaxH3/start.ps1 能跑起来后再 resume")
+        raise GenerateWaiting("Comfy 启动超时，确认 comfyui/start.ps1 能跑起来后再 resume")
     _log(directory, "Comfy 已起来")
 
 

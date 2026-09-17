@@ -1,4 +1,4 @@
-"""ComfyUI HTTP client：把 minmaxH3 的 UI 工作流转成 /prompt，逐段出片。"""
+"""ComfyUI HTTP client：把 comfyui 的 UI 工作流转成 /prompt，逐段出片。"""
 
 from __future__ import annotations
 

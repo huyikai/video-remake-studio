@@ -138,7 +138,7 @@ def collect_env(settings: Settings, *, stage: str = "idle") -> dict[str, Any]:
 
     path_keys = [
         ("vrs_runtime_root", "vrs-runtime"),
-        ("minmax_h3_root", "minmaxH3"),
+        ("minmax_h3_root", "comfyui 根目录"),
         ("h3_skills_root", "h3-prompt-writing 根"),
         ("whisper_model_dir", "Whisper 权重（旧）"),
         ("ocr_model_dir", "OCR 权重"),
